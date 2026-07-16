@@ -1,0 +1,41 @@
+name: 'Local AI Code Review'
+description: 'Reviews pull request diffs using a local Ollama model (Qwen, CodeGeeX, etc.) on a self-hosted runner. No cloud API required.'
+author: 'runbot-hq'
+
+branding:
+  icon: 'cpu'
+  color: 'purple'
+
+inputs:
+  model:
+    description: 'Ollama model to use (e.g. qwen3.5:9b, codegeex4:9b, qwen3.5:4b)'
+    required: false
+    default: 'qwen3.5:9b'
+  base_url:
+    description: 'Ollama base URL'
+    required: false
+    default: 'http://localhost:11434'
+  temperature:
+    description: 'Sampling temperature (0.0-1.0). Lower = more deterministic.'
+    required: false
+    default: '0.2'
+  maximum_response_tokens:
+    description: 'Max tokens in model response'
+    required: false
+    default: '2048'
+  prompt_extra:
+    description: 'Extra instructions appended to the review prompt (max 300 chars)'
+    required: false
+    default: ''
+  debug:
+    description: 'Enable debug logging'
+    required: false
+    default: 'false'
+
+outputs:
+  review_body:
+    description: 'The full review comment posted to the PR'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
