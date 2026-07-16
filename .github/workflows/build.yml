@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'tsconfig.json'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build dist
+    runs-on: [self-hosted, macos-m1]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build dist
+        run: npm run build
+
+      - name: Copy local-ai-cli-bin from local-ai-cli
+        run: |
+          BIN_PATH="$HOME/local-ai-cli/local-ai-cli-bin"
+          if [ -f "$BIN_PATH" ]; then
+            cp "$BIN_PATH" local-ai-cli-bin
+            chmod +x local-ai-cli-bin
+            echo "Copied binary from $BIN_PATH"
+          else
+            echo "Warning: local-ai-cli-bin not found at $BIN_PATH — binary not updated"
+          fi
+
+      - name: Commit dist and binary
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/ local-ai-cli-bin
+          git diff --cached --quiet || git commit -m "chore: update dist and binary [skip ci]"
+          git push
