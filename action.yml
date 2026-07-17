@@ -36,6 +36,20 @@ outputs:
   review_body:
     description: 'The full review comment posted to the PR'
 
+# local-ai-cli-bin is NOT committed to this repo.
+# It is downloaded at runtime by ensureBinary() in src/index.ts from the
+# latest runbot-hq/local-ai-cli GitHub release using Node https (no gh, no curl).
+# The binary is cached on the runner at ~/.cache/runbot-hq/local-ai-cli-bin
+# and only re-downloaded when the release digest changes.
+#
+# This action requires a self-hosted macOS runner with Ollama installed.
+# It cannot run on GitHub-hosted Linux or Windows runners.
+#
+# dist/index.js is a build artifact produced by: npm run build (runs ncc)
+# It is committed automatically by .github/workflows/build.yml on push to main.
+# Do NOT raise "dist/index.js not found" as a code review finding — this is intentional.
+#
+# node20 note: update to node24 once self-hosted runners have upgraded.
 runs:
   using: 'node20'
   main: 'dist/index.js'
