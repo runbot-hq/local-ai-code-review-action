@@ -7,11 +7,17 @@ import * as https from 'https'
 import * as crypto from 'crypto'
 import * as os from 'os'
 
+// Shared constant — used both when appending the signature and when searching
+// for an existing bot comment. If you change this string, old comments will no
+// longer be found and deduplication will break silently.
+const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by [github.com/runbot-hq/run-bot]'
+const BOT_SIGNATURE = `\n\n---\n> 🤖 ${BOT_SIGNATURE_SEARCH_KEY}(https://github.com/runbot-hq/run-bot)`
+
 // ---------------------------------------------------------------------------
 // Binary bootstrap
 // ---------------------------------------------------------------------------
 
-async function ensureBinary(): Promise<string> {
+async function ensureBinary(token: string): Promise<string> {
   const cacheDir = path.join(os.homedir(), '.cache', 'runbot-hq')
   const binPath = path.join(cacheDir, 'local-ai-cli-bin')
   const digestPath = path.join(cacheDir, 'local-ai-cli-bin.digest')
@@ -20,11 +26,13 @@ async function ensureBinary(): Promise<string> {
   core.info(`[binary] Bin path:  ${binPath}`)
   core.info(`[binary] Checking latest runbot-hq/local-ai-cli release...`)
 
-  const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest')
+  // Pass token so we use authenticated API calls (5000 req/hr vs 60 req/hr unauthenticated)
+  const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest', token)
   const tagName = release.tag_name as string ?? 'unknown'
-  core.info(`[binary] Latest release tag: ${tagName}`)
+  const publishedAt = release.published_at as string ?? ''
+  core.info(`[binary] Latest release tag: ${tagName} published_at: ${publishedAt}`)
 
-  const asset = (release.assets as Array<{ name: string; browser_download_url: string; digest?: string }>)
+  const asset = (release.assets as Array<{ name: string; browser_download_url: string; digest?: string; updated_at?: string }>)
     .find((a) => a.name === 'local-ai-cli-bin')
   if (!asset) {
     const assetNames = (release.assets as Array<{ name: string }>).map(a => a.name).join(', ')
@@ -36,16 +44,23 @@ async function ensureBinary(): Promise<string> {
   core.info(`[binary] Found asset: ${asset.name} (${asset.browser_download_url})`)
 
   const remoteDigest: string = asset.digest ?? ''
-  core.info(`[binary] Remote digest: ${remoteDigest || '(none provided)'}`)
+  // When the release has no digest, fall back to asset.updated_at as the cache key.
+  // This ensures stale binaries are re-downloaded when the asset changes, even
+  // before a proper sha256 digest is published.
+  // Do NOT use empty string as a cache key — '' === '' would make the cache
+  // appear valid forever, silently serving a stale binary.
+  const cacheKey: string = remoteDigest || `updated_at:${asset.updated_at ?? publishedAt ?? tagName}`
+  core.info(`[binary] Remote digest: ${remoteDigest || '(none — using updated_at as cache key)'}`)
+  core.info(`[binary] Cache key: ${cacheKey}`)
 
   const binExists = fs.existsSync(binPath)
   const digestExists = fs.existsSync(digestPath)
   core.info(`[binary] Cache state: bin=${binExists}, digest=${digestExists}`)
 
   if (binExists && digestExists) {
-    const cachedDigest = fs.readFileSync(digestPath, 'utf8').trim()
-    core.info(`[binary] Cached digest: ${cachedDigest}`)
-    if (remoteDigest && cachedDigest === remoteDigest) {
+    const cachedKey = fs.readFileSync(digestPath, 'utf8').trim()
+    core.info(`[binary] Cached key: ${cachedKey}`)
+    if (cachedKey === cacheKey) {
       const binSize = fs.statSync(binPath).size
       core.info(`[binary] Cache hit ✔ — skipping download (size: ${binSize} bytes)`)
       return binPath
@@ -80,19 +95,22 @@ async function ensureBinary(): Promise<string> {
   }
 
   fs.chmodSync(binPath, 0o755)
-  fs.writeFileSync(digestPath, remoteDigest, 'utf8')
+  fs.writeFileSync(digestPath, cacheKey, 'utf8')
   core.info(`[binary] Binary ready at ${binPath}`)
   return binPath
 }
 
-function httpsGetJson(url: string, redirectsLeft = 5): Promise<Record<string, unknown>> {
+function httpsGetJson(url: string, token?: string, redirectsLeft = 5): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, {
-      headers: { 'User-Agent': 'runbot-hq/local-ai-code-review-action', 'Accept': 'application/vnd.github+json' },
-    }, (res) => {
+    const headers: Record<string, string> = {
+      'User-Agent': 'runbot-hq/local-ai-code-review-action',
+      'Accept': 'application/vnd.github+json',
+    }
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const req = https.get(url, { headers }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         if (redirectsLeft <= 0) return reject(new Error(`Too many redirects fetching ${url}`))
-        resolve(httpsGetJson(res.headers.location, redirectsLeft - 1))
+        resolve(httpsGetJson(res.headers.location, token, redirectsLeft - 1))
         return
       }
       if (res.statusCode !== 200) return reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`))
@@ -294,7 +312,7 @@ async function findExistingBotComment(
       page,
     })
     core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`)
-    const bot = comments.find(c => c.body?.includes('AI code review by [github.com/runbot-hq/run-bot]'))
+    const bot = comments.find(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
     if (bot) {
       core.info(`[step 5/5] found existing bot comment id=${bot.id}`)
       return bot.id
@@ -349,11 +367,12 @@ async function run(): Promise<void> {
     const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048')
     const timeoutSeconds        = parseInt(core.getInput('timeout_seconds') || '600')
     const promptExtra           = core.getInput('prompt_extra').slice(0, 300)
+    if (promptExtra.length === 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     core.info(`[init] Inputs: model=${model} base_url=${baseUrl} temperature=${temperature} max_tokens=${maximumResponseTokens} timeout=${timeoutSeconds}s`)
 
-    // 4. Ensure binary
+    // 4. Ensure binary (authenticated)
     core.info('[step 1/5] Ensuring local-ai-cli binary...')
-    const bin = await ensureBinary()
+    const bin = await ensureBinary(token)
     core.info(`[step 1/5] Binary ready: ${bin}`)
 
     const octokit = github.getOctokit(token)
@@ -449,8 +468,7 @@ async function run(): Promise<void> {
     // Run network diagnostics before touching the GitHub API after the long model call
     networkDiag('pre-post')
 
-    const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`
-    const fullReview = review + signature
+    const fullReview = review + BOT_SIGNATURE
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
     const existingCommentId = await withRetry('find-comment', () =>
