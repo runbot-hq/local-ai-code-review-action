@@ -29966,6 +29966,132 @@ const github = __importStar(__nccwpck_require__(3228));
 const child_process_1 = __nccwpck_require__(5317);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
+const https = __importStar(__nccwpck_require__(5692));
+const crypto = __importStar(__nccwpck_require__(6982));
+const os = __importStar(__nccwpck_require__(857));
+// ---------------------------------------------------------------------------
+// Binary bootstrap
+// ---------------------------------------------------------------------------
+/**
+ * Ensures local-ai-cli-bin is present on the runner, downloading it from the
+ * latest runbot-hq/local-ai-cli release if the cached copy is missing or stale.
+ *
+ * Uses the GitHub releases API (unauthenticated — public repo) + Node https.
+ * No gh CLI, no curl, no external tools required on the runner.
+ *
+ * Cache location: ~/.cache/runbot-hq/local-ai-cli-bin
+ * Staleness check: sha256 digest from the release asset metadata.
+ * If the digest matches the cached binary, the download is skipped entirely.
+ *
+ * Returns the path to the executable binary.
+ */
+async function ensureBinary() {
+    const cacheDir = path.join(os.homedir(), '.cache', 'runbot-hq');
+    const binPath = path.join(cacheDir, 'local-ai-cli-bin');
+    const digestPath = path.join(cacheDir, 'local-ai-cli-bin.digest');
+    // 1. Fetch latest release metadata from GitHub API (no auth needed — public repo)
+    core.info('[local-ai] Checking latest local-ai-cli release...');
+    const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest');
+    const asset = release.assets
+        .find((a) => a.name === 'local-ai-cli-bin');
+    if (!asset)
+        throw new Error('local-ai-cli-bin asset not found in latest release of runbot-hq/local-ai-cli');
+    const remoteDigest = asset.digest ?? '';
+    // 2. Check cache — skip download if digest matches
+    if (fs.existsSync(binPath) && fs.existsSync(digestPath)) {
+        const cachedDigest = fs.readFileSync(digestPath, 'utf8').trim();
+        if (remoteDigest && cachedDigest === remoteDigest) {
+            core.info(`[local-ai] Cache hit (${remoteDigest}) — skipping download`);
+            return binPath;
+        }
+        core.info(`[local-ai] Cache stale (cached: ${cachedDigest}, remote: ${remoteDigest}) — re-downloading`);
+    }
+    else {
+        core.info('[local-ai] No cached binary — downloading...');
+    }
+    // 3. Download binary
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const downloadUrl = asset.browser_download_url;
+    core.info(`[local-ai] Downloading from ${downloadUrl}`);
+    await httpsDownload(downloadUrl, binPath);
+    // 4. Verify digest if available
+    if (remoteDigest && remoteDigest.startsWith('sha256:')) {
+        const expectedHex = remoteDigest.slice('sha256:'.length);
+        const actualHex = sha256File(binPath);
+        if (actualHex !== expectedHex) {
+            fs.unlinkSync(binPath);
+            throw new Error(`local-ai-cli-bin digest mismatch — expected sha256:${expectedHex}, got sha256:${actualHex}. ` +
+                'The downloaded binary may be corrupted. Retry the workflow.');
+        }
+        core.info(`[local-ai] Digest verified: sha256:${actualHex}`);
+    }
+    // 5. Make executable and cache digest
+    fs.chmodSync(binPath, 0o755);
+    fs.writeFileSync(digestPath, remoteDigest, 'utf8');
+    core.info(`[local-ai] Binary ready at ${binPath}`);
+    return binPath;
+}
+/**
+ * Fetches a JSON response from a public HTTPS URL.
+ * Follows redirects (up to 5 hops). Sets User-Agent to avoid GitHub API 403.
+ */
+function httpsGetJson(url, redirectsLeft = 5) {
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, {
+            headers: { 'User-Agent': 'runbot-hq/local-ai-code-review-action', 'Accept': 'application/vnd.github+json' },
+        }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                if (redirectsLeft <= 0)
+                    return reject(new Error(`Too many redirects fetching ${url}`));
+                resolve(httpsGetJson(res.headers.location, redirectsLeft - 1));
+                return;
+            }
+            if (res.statusCode !== 200)
+                return reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`));
+            let body = '';
+            res.on('data', (chunk) => { body += chunk; });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(body));
+                }
+                catch (e) {
+                    reject(new Error(`Failed to parse JSON from ${url}: ${e}`));
+                }
+            });
+        });
+        req.on('error', reject);
+    });
+}
+/**
+ * Downloads a binary file from url to destPath, following redirects.
+ * browser_download_url redirects through S3 — must follow at least one hop.
+ */
+function httpsDownload(url, destPath, redirectsLeft = 5) {
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, {
+            headers: { 'User-Agent': 'runbot-hq/local-ai-code-review-action' },
+        }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                if (redirectsLeft <= 0)
+                    return reject(new Error(`Too many redirects downloading ${url}`));
+                resolve(httpsDownload(res.headers.location, destPath, redirectsLeft - 1));
+                return;
+            }
+            if (res.statusCode !== 200)
+                return reject(new Error(`Download returned HTTP ${res.statusCode} for ${url}`));
+            const file = fs.createWriteStream(destPath);
+            res.pipe(file);
+            file.on('finish', () => file.close(() => resolve()));
+            file.on('error', (e) => { fs.unlink(destPath, () => { }); reject(e); });
+        });
+        req.on('error', reject);
+    });
+}
+/** Returns the hex-encoded sha256 digest of a file. */
+function sha256File(filePath) {
+    const buf = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(buf).digest('hex');
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -30024,12 +30150,6 @@ function localAiCli(bin, prompt, options) {
 }
 /**
  * Returns true if the error is fatal and a retry cannot recover from it.
- * These map to hard exit(1) paths in local-ai-cli main.swift, or to
- * Ollama HTTP errors that will never resolve on retry.
- *
- * HTTP 404 = model not found — retrying after 15s will not help.
- * invalid --base-url = bad config — will never resolve.
- * eacces / enoent = binary permissions or missing file — will never resolve.
  */
 function isFatalError(e) {
     const msg = String(e).toLowerCase();
@@ -30090,23 +30210,10 @@ async function run() {
         const baseUrl = core.getInput('base_url') || 'http://localhost:11434';
         const temperature = parseFloat(core.getInput('temperature') || '0.2');
         const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048');
-        // Enforce 300-char cap at runtime — action.yml documents this limit but callers
-        // can pass arbitrary-length strings. Silently truncate rather than error to
-        // avoid breaking workflows over a minor misconfiguration.
         const promptExtra = core.getInput('prompt_extra').slice(0, 300);
-        // 4. Resolve binary path
-        const actionPath = process.env.GITHUB_ACTION_PATH ?? path.join(__dirname, '..');
-        const bin = path.join(actionPath, 'local-ai-cli-bin');
-        if (!fs.existsSync(bin)) {
-            throw new Error(`local-ai-cli-bin not found at ${bin}. ` +
-                'This action requires a self-hosted macOS runner with Ollama installed.');
-        }
-        try {
-            fs.accessSync(bin, fs.constants.X_OK);
-        }
-        catch {
-            throw new Error(`local-ai-cli-bin at ${bin} is not executable. Run: chmod +x local-ai-cli-bin and recommit.`);
-        }
+        // 4. Ensure binary — download from latest runbot-hq/local-ai-cli release if
+        //    not cached or stale. No vendored binary in this repo. No gh CLI required.
+        const bin = await ensureBinary();
         const octokit = github.getOctokit(token);
         // 5. Fetch PR changed files
         const { data: files } = await octokit.rest.pulls.listFiles({
@@ -30119,8 +30226,6 @@ async function run() {
             core.info('[local-ai] PR has no changed files — skipping review.');
             return;
         }
-        // GitHub API hard-caps listFiles at 100. Warn so the reviewer knows the
-        // file list may be incomplete — the diff will also be truncated below.
         if (files.length === 100) {
             core.warning('[local-ai] PR has ≥50 changed files — GitHub API returns max 100. File list may be incomplete.');
         }
@@ -30162,7 +30267,7 @@ async function run() {
             diffBlock,
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
-        // 8. Call local-ai-cli with retry (same cold-start pattern as afm-release-notes-action)
+        // 8. Call local-ai-cli with retry
         core.info(`[local-ai] Calling ${model} via Ollama...`);
         let review = '';
         try {
@@ -30193,8 +30298,7 @@ async function run() {
         // 9. Append signature
         const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`;
         const fullReview = review + signature;
-        // 10. Delete previous bot comment on any trigger event to avoid stacking reviews.
-        // Covers opened, synchronize, and reopened — matching the action trigger list.
+        // 10. Delete previous bot comment
         const existingCommentId = await findExistingBotComment(octokit, owner, repoName, prNumber);
         if (existingCommentId) {
             core.info(`[local-ai] Deleting previous bot review comment ${existingCommentId}`);
