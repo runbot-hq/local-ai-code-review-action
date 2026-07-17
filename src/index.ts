@@ -477,10 +477,10 @@ async function run(): Promise<void> {
     // 8. Call model
     const instructions = [
       'You are a senior software engineer performing a concise, constructive code review.',
-      'Focus on: bugs, security issues, Swift best practices, performance, and code clarity.',
+      'Focus on: bugs, security issues, best practices, performance, and code clarity.',
       'Use Markdown. Group feedback by filename using ### headers.',
       'Use bullet points for individual issues. Be specific — reference line numbers where possible.',
-      'Do NOT summarise what the code does. Only flag issues, risks, and concrete suggestions.',
+      'Do NOT summarise what the code does. Do NOT praise. Only flag issues, risks, and concrete suggestions.',
       'If there are no issues in a file, skip it entirely.',
     ].join(' ')
 
