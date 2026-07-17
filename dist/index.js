@@ -29976,6 +29976,31 @@ const os = __importStar(__nccwpck_require__(857));
 const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
 const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
 // ---------------------------------------------------------------------------
+// Tier selection
+// ---------------------------------------------------------------------------
+// File extensions/names that carry no reviewable logic — excluded from the
+// reviewable-lines count used to select shallow vs deep review tier.
+const NON_CODE_PATTERNS = [
+    /\.md$/i,
+    /\.lock$/i,
+    /\.json$/i,
+    /\.yml$/i,
+    /\.yaml$/i,
+    /^package-lock\.json$/i,
+];
+function isNonCode(filename) {
+    const base = path.basename(filename);
+    return NON_CODE_PATTERNS.some(p => p.test(base));
+}
+function selectTier(files) {
+    const SHALLOW_THRESHOLD = 150;
+    const reviewableLines = files
+        .filter(f => !isNonCode(f.filename))
+        .reduce((sum, f) => sum + f.additions + f.deletions, 0);
+    const tier = reviewableLines >= SHALLOW_THRESHOLD ? 'deep' : 'shallow';
+    return { tier, reviewableLines };
+}
+// ---------------------------------------------------------------------------
 // Binary bootstrap
 // ---------------------------------------------------------------------------
 async function ensureBinary(token) {
@@ -29985,7 +30010,6 @@ async function ensureBinary(token) {
     core.info(`[binary] Cache dir: ${cacheDir}`);
     core.info(`[binary] Bin path:  ${binPath}`);
     core.info(`[binary] Checking latest runbot-hq/local-ai-cli release...`);
-    // Pass token so we use authenticated API calls (5000 req/hr vs 60 req/hr unauthenticated)
     const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest', token);
     const tagName = release.tag_name ?? 'unknown';
     const publishedAt = release.published_at ?? '';
@@ -29999,11 +30023,6 @@ async function ensureBinary(token) {
     }
     core.info(`[binary] Found asset: ${asset.name} (${asset.browser_download_url})`);
     const remoteDigest = asset.digest ?? '';
-    // When the release has no digest, fall back to asset.updated_at as the cache key.
-    // This ensures stale binaries are re-downloaded when the asset changes, even
-    // before a proper sha256 digest is published.
-    // Do NOT use empty string as a cache key — '' === '' would make the cache
-    // appear valid forever, silently serving a stale binary.
     const cacheKey = remoteDigest || `updated_at:${asset.updated_at ?? publishedAt ?? tagName}`;
     core.info(`[binary] Remote digest: ${remoteDigest || '(none — using updated_at as cache key)'}`);
     core.info(`[binary] Cache key: ${cacheKey}`);
@@ -30199,8 +30218,9 @@ function localAiCli(bin, prompt, options) {
     if (options?.maximumResponseTokens !== undefined)
         args.push('--maximum-response-tokens', String(options.maximumResponseTokens));
     args.push('--timeout', String(timeoutSeconds));
+    args.push('--think', options?.think ? 'true' : 'false');
     core.info(`[cli] Invoking binary: ${bin}`);
-    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s`);
+    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s think=${options?.think ?? false}`);
     if (core.isDebug()) {
         core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`);
     }
@@ -30234,6 +30254,13 @@ function isFatalError(e) {
         msg.includes('http 404') ||
         msg.includes('eacces') ||
         msg.includes('enoent'));
+}
+function isEmptyThinkExhaust(e, think) {
+    if (!think)
+        return false;
+    const msg = String(e);
+    return (msg.includes('empty response') &&
+        (msg.includes('done_reason=stop') || msg.includes('done_reason=length')));
 }
 async function findExistingBotComment(octokit, owner, repo, prNumber) {
     core.info(`[step 5/5] searching for existing bot comment on PR #${prNumber}...`);
@@ -30294,13 +30321,16 @@ async function run() {
         const model = core.getInput('model') || 'qwen3.5:9b';
         const baseUrl = core.getInput('base_url') || 'http://localhost:11434';
         const temperature = parseFloat(core.getInput('temperature') || '0.2');
-        const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048');
         const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600');
         const promptExtraRaw = core.getInput('prompt_extra');
         if (promptExtraRaw.length > 300)
             core.warning('[init] prompt_extra was truncated to 300 chars');
         const promptExtra = promptExtraRaw.slice(0, 300);
-        core.info(`[init] Inputs: model=${model} base_url=${baseUrl} temperature=${temperature} max_tokens=${maximumResponseTokens} timeout=${timeoutSeconds}s`);
+        // maximum_response_tokens: if caller explicitly sets it, honour it;
+        // otherwise the tier selection below sets the appropriate default.
+        const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
+            ? parseInt(core.getInput('maximum_response_tokens'))
+            : undefined;
         // 4. Ensure binary (authenticated)
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await ensureBinary(token);
@@ -30325,7 +30355,12 @@ async function run() {
         if (files.length === 100) {
             core.warning('[step 2/5] 100 files returned — list may be truncated by GitHub API.');
         }
-        // 6. Build diff block
+        // 6. Select review tier based on reviewable lines
+        const { tier, reviewableLines } = selectTier(files);
+        const think = tier === 'deep';
+        const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
+        core.info(`[tier] ${tier}, reviewable_lines=${reviewableLines}, think=${think}, max_tokens=${maximumResponseTokens}${maximumResponseTokensOverride !== undefined ? ' (caller override)' : ''}`);
+        // 7. Build diff block
         core.info('[step 3/5] Building diff block...');
         const MAX_PATCH_CHARS = 60000;
         let diffBlock = '';
@@ -30351,7 +30386,7 @@ async function run() {
         if (truncated) {
             diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`;
         }
-        // 7. Call model
+        // 8. Call model
         const instructions = [
             'You are a senior software engineer performing a concise, constructive code review.',
             'Focus on: bugs, security issues, Swift best practices, performance, and code clarity.',
@@ -30367,27 +30402,33 @@ async function run() {
             diffBlock,
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
-        core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s)...`);
+        core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think})...`);
+        const cliOpts = { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds, think };
         let review = '';
         try {
-            review = localAiCli(bin, prompt, { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds });
+            review = localAiCli(bin, prompt, cliOpts);
         }
         catch (e) {
             core.warning(`[step 4/5] Attempt 1 failed: ${String(e)}`);
             if (isFatalError(e))
                 throw e;
-            core.info('[step 4/5] Retrying in 15s (cold-start model load)...');
-            await new Promise(r => setTimeout(r, 15000));
-            core.info('[step 4/5] Attempt 2...');
-            review = localAiCli(bin, prompt, { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds });
+            if (isEmptyThinkExhaust(e, think)) {
+                core.warning('[step 4/5] think=true produced empty response — retrying with think=false');
+                review = localAiCli(bin, prompt, { ...cliOpts, think: false });
+            }
+            else {
+                core.info('[step 4/5] Retrying in 15s (cold-start model load)...');
+                await new Promise(r => setTimeout(r, 15000));
+                core.info('[step 4/5] Attempt 2...');
+                review = localAiCli(bin, prompt, cliOpts);
+            }
         }
         if (!review)
             throw new Error('local-ai-cli returned empty output');
         core.info(`[step 4/5] Model response: ${review.length} chars`);
-        // 8. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
+        // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
-        // Run network diagnostics before touching the GitHub API after the long model call
         networkDiag('pre-post');
         const fullReview = review + BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
@@ -30412,6 +30453,7 @@ async function run() {
         await core.summary
             .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
             .addRaw(`**Model:** ${model}\n`)
+            .addRaw(`**Tier:** ${tier} (reviewable lines: ${reviewableLines})\n`)
             .addRaw(`**Runner:** ${process.env.RUNNER_NAME ?? 'unknown'}\n`)
             .addRaw(`**Files reviewed:** ${files.length} (${truncated ? 'diff truncated' : 'full diff'})\n\n`)
             .addRaw(review)
