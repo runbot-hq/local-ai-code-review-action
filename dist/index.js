@@ -29984,6 +29984,7 @@ const fs = __importStar(__nccwpck_require__(9896));
  *   --temperature              → sampling temperature
  *   --maximum-response-tokens  → num_predict
  *   --base-url                 → Ollama base URL
+ *   --timeout                  → URLRequest timeout in seconds (default 300)
  */
 function localAiCli(bin, prompt, options) {
     const args = ['--prompt', prompt];
@@ -29997,12 +29998,18 @@ function localAiCli(bin, prompt, options) {
         args.push('--temperature', String(options.temperature));
     if (options?.maximumResponseTokens !== undefined)
         args.push('--maximum-response-tokens', String(options.maximumResponseTokens));
+    // Always pass --timeout explicitly — URLSession.shared default is 60s which is
+    // insufficient for large model cold loads (qwen3.5:9b). Do NOT remove this.
+    args.push('--timeout', String(options?.timeoutSeconds ?? 300));
     if (core.isDebug()) {
         core.debug(`[local-ai] spawnSync: ${bin} ${args.map(a => JSON.stringify(a)).join(' ')}`);
     }
     const result = (0, child_process_1.spawnSync)(bin, args, {
         encoding: 'utf8',
-        timeout: 120000,
+        // 360s — must exceed the --timeout passed to the binary (300s) plus
+        // buffer for process startup and response marshalling.
+        // Do NOT lower below 300s.
+        timeout: 360000,
         // 10MB buffer — large model responses (4096 tokens of markdown) can exceed
         // Node's default 1MB maxBuffer, causing a silent ENOBUFS truncation.
         // Do NOT lower this value.
