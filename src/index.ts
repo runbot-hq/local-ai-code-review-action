@@ -11,43 +11,61 @@ import * as os from 'os'
 // Binary bootstrap
 // ---------------------------------------------------------------------------
 
-/**
- * Ensures local-ai-cli-bin is present on the runner, downloading it from the
- * latest runbot-hq/local-ai-cli release if the cached copy is missing or stale.
- *
- * Cache location: ~/.cache/runbot-hq/local-ai-cli-bin
- * Staleness check: sha256 digest from the release asset metadata.
- */
 async function ensureBinary(): Promise<string> {
   const cacheDir = path.join(os.homedir(), '.cache', 'runbot-hq')
   const binPath = path.join(cacheDir, 'local-ai-cli-bin')
   const digestPath = path.join(cacheDir, 'local-ai-cli-bin.digest')
 
-  core.info('[local-ai] Checking latest local-ai-cli release...')
+  core.info(`[binary] Cache dir: ${cacheDir}`)
+  core.info(`[binary] Bin path:  ${binPath}`)
+  core.info(`[binary] Checking latest runbot-hq/local-ai-cli release...`)
+
   const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest')
+  const tagName = release.tag_name as string ?? 'unknown'
+  core.info(`[binary] Latest release tag: ${tagName}`)
+
   const asset = (release.assets as Array<{ name: string; browser_download_url: string; digest?: string }>)
     .find((a) => a.name === 'local-ai-cli-bin')
-  if (!asset) throw new Error('local-ai-cli-bin asset not found in latest release of runbot-hq/local-ai-cli')
+  if (!asset) {
+    const assetNames = (release.assets as Array<{ name: string }>).map(a => a.name).join(', ')
+    throw new Error(
+      `local-ai-cli-bin asset not found in release ${tagName} of runbot-hq/local-ai-cli. ` +
+      `Available assets: [${assetNames}]`
+    )
+  }
+  core.info(`[binary] Found asset: ${asset.name} (${asset.browser_download_url})`)
 
   const remoteDigest: string = asset.digest ?? ''
+  core.info(`[binary] Remote digest: ${remoteDigest || '(none provided)'}`)
 
-  if (fs.existsSync(binPath) && fs.existsSync(digestPath)) {
+  const binExists = fs.existsSync(binPath)
+  const digestExists = fs.existsSync(digestPath)
+  core.info(`[binary] Cache state: bin=${binExists}, digest=${digestExists}`)
+
+  if (binExists && digestExists) {
     const cachedDigest = fs.readFileSync(digestPath, 'utf8').trim()
+    core.info(`[binary] Cached digest: ${cachedDigest}`)
     if (remoteDigest && cachedDigest === remoteDigest) {
-      core.info(`[local-ai] Cache hit (${remoteDigest}) — skipping download`)
+      const binSize = fs.statSync(binPath).size
+      core.info(`[binary] Cache hit ✔ — skipping download (size: ${binSize} bytes)`)
       return binPath
     }
-    core.info(`[local-ai] Cache stale (cached: ${cachedDigest}, remote: ${remoteDigest}) — re-downloading`)
+    core.info(`[binary] Cache stale — re-downloading`)
   } else {
-    core.info('[local-ai] No cached binary — downloading...')
+    core.info(`[binary] No cached binary — downloading for the first time`)
   }
 
   fs.mkdirSync(cacheDir, { recursive: true })
-  core.info(`[local-ai] Downloading from ${asset.browser_download_url}`)
+  core.info(`[binary] Downloading ${asset.browser_download_url} ...`)
+  const downloadStart = Date.now()
   await httpsDownload(asset.browser_download_url, binPath)
+  const downloadMs = Date.now() - downloadStart
+  const binSize = fs.statSync(binPath).size
+  core.info(`[binary] Download complete in ${downloadMs}ms (${binSize} bytes)`)
 
   if (remoteDigest && remoteDigest.startsWith('sha256:')) {
     const expectedHex = remoteDigest.slice('sha256:'.length)
+    core.info(`[binary] Verifying sha256...`)
     const actualHex = sha256File(binPath)
     if (actualHex !== expectedHex) {
       fs.unlinkSync(binPath)
@@ -56,12 +74,14 @@ async function ensureBinary(): Promise<string> {
         'The downloaded binary may be corrupted. Retry the workflow.'
       )
     }
-    core.info(`[local-ai] Digest verified: sha256:${actualHex}`)
+    core.info(`[binary] Digest verified ✔ sha256:${actualHex}`)
+  } else {
+    core.info(`[binary] No sha256 digest to verify — skipping integrity check`)
   }
 
   fs.chmodSync(binPath, 0o755)
   fs.writeFileSync(digestPath, remoteDigest, 'utf8')
-  core.info(`[local-ai] Binary ready at ${binPath}`)
+  core.info(`[binary] Binary ready at ${binPath}`)
   return binPath
 }
 
@@ -112,19 +132,13 @@ function sha256File(filePath: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// CLI wrapper
 // ---------------------------------------------------------------------------
 
 /**
  * Calls local-ai-cli-bin via spawnSync with an explicit argv array.
- *
- * spawnSync is used instead of execSync deliberately — it passes args
- * directly to the OS without invoking a shell, eliminating any risk of
- * shell metacharacter interpretation in prompt content.
- * Do NOT refactor to execSync with a shell string.
- *
- * spawnSyncTimeoutMs = timeoutSeconds + 60s buffer for process startup
- * and response marshalling. Do NOT set it equal to or below timeoutSeconds.
+ * spawnSync passes args directly to the OS without a shell — no metacharacter risk.
+ * Do NOT refactor to execSync.
  */
 function localAiCli(bin: string, prompt: string, options?: {
   instructions?: string
@@ -144,23 +158,37 @@ function localAiCli(bin: string, prompt: string, options?: {
   if (options?.maximumResponseTokens !== undefined) args.push('--maximum-response-tokens', String(options.maximumResponseTokens))
   args.push('--timeout', String(timeoutSeconds))
 
+  core.info(`[cli] Invoking binary: ${bin}`)
+  core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s`)
   if (core.isDebug()) {
-    core.debug(`[local-ai] spawnSync: ${bin} ${args.map(a => JSON.stringify(a)).join(' ')}`)
+    core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`)
   }
 
+  const spawnTimeoutMs = (timeoutSeconds + 60) * 1000
+  core.info(`[cli] spawnSync hard-kill timeout: ${spawnTimeoutMs / 1000}s`)
+
+  const callStart = Date.now()
   const result = spawnSync(bin, args, {
     encoding: 'utf8',
-    // Hard-kill at timeoutSeconds + 60s to give the binary time to respect
-    // its own --timeout before Node kills the process.
-    timeout: (timeoutSeconds + 60) * 1000,
+    timeout: spawnTimeoutMs,
     maxBuffer: 10 * 1024 * 1024,
   })
+  const callMs = Date.now() - callStart
+  core.info(`[cli] spawnSync returned in ${callMs}ms, exit code: ${result.status}`)
 
-  if (result.error) throw result.error
+  if (result.error) {
+    core.error(`[cli] spawnSync error: ${result.error}`)
+    throw result.error
+  }
+  if (result.stderr) {
+    core.info(`[cli] stderr: ${result.stderr.trim()}`)
+  }
   if (result.status !== 0) {
     throw new Error(`local-ai-cli exited ${result.status}: ${result.stderr?.trim()}`)
   }
 
+  const outputLen = result.stdout?.length ?? 0
+  core.info(`[cli] stdout length: ${outputLen} chars`)
   return result.stdout.trim()
 }
 
@@ -202,18 +230,25 @@ async function findExistingBotComment(
 
 async function run(): Promise<void> {
   try {
+    core.info('=== local-ai-code-review-action starting ===')
+    core.info(`[init] Node version: ${process.version}`)
+    core.info(`[init] Platform: ${process.platform} ${process.arch}`)
+    core.info(`[init] HOME: ${os.homedir()}`)
+    core.info(`[init] Runner: ${process.env.RUNNER_NAME ?? 'unknown'}`)
+
     if (core.getInput('debug') === 'true') process.env.ACTIONS_STEP_DEBUG = '1'
 
+    // 1. Validate token
     const token = process.env.GITHUB_TOKEN
     if (!token) throw new Error(
       'GITHUB_TOKEN is not set — add `env: GITHUB_TOKEN: ${{ github.token }}` to your workflow step.'
     )
+    core.info('[init] GITHUB_TOKEN: present')
 
+    // 2. Validate PR context
     const context = github.context
     if (!context.payload.pull_request) {
-      throw new Error(
-        'This action must be triggered by a pull_request event (opened, synchronize, reopened).'
-      )
+      throw new Error('This action must be triggered by a pull_request event (opened, synchronize, reopened).')
     }
 
     const pr        = context.payload.pull_request
@@ -222,58 +257,75 @@ async function run(): Promise<void> {
     const repo      = process.env.GITHUB_REPOSITORY ?? ''
     const [owner, repoName] = repo.split('/')
     if (!owner || !repoName) throw new Error(`GITHUB_REPOSITORY is not set or malformed (got: "${repo}")`)
+    core.info(`[init] PR: #${prNumber} "${prTitle}" in ${owner}/${repoName}`)
 
+    // 3. Read inputs
     const model                 = core.getInput('model')                  || 'qwen3.5:9b'
     const baseUrl               = core.getInput('base_url')               || 'http://localhost:11434'
     const temperature           = parseFloat(core.getInput('temperature') || '0.2')
     const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048')
     const timeoutSeconds        = parseInt(core.getInput('timeout_seconds') || '600')
     const promptExtra           = core.getInput('prompt_extra').slice(0, 300)
+    core.info(`[init] Inputs: model=${model} base_url=${baseUrl} temperature=${temperature} max_tokens=${maximumResponseTokens} timeout=${timeoutSeconds}s`)
 
+    // 4. Ensure binary
+    core.info('[step 1/5] Ensuring local-ai-cli binary...')
     const bin = await ensureBinary()
+    core.info(`[step 1/5] Binary ready: ${bin}`)
 
     const octokit = github.getOctokit(token)
 
+    // 5. Fetch PR files
+    core.info('[step 2/5] Fetching PR changed files...')
     const { data: files } = await octokit.rest.pulls.listFiles({
       owner,
       repo: repoName,
       pull_number: prNumber,
       per_page: 100,
     })
+    core.info(`[step 2/5] Files changed: ${files.length}`)
+    for (const f of files) {
+      core.info(`  • ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`)
+    }
 
     if (files.length === 0) {
-      core.info('[local-ai] PR has no changed files — skipping review.')
+      core.info('[step 2/5] No changed files — skipping review.')
       return
     }
-
     if (files.length === 100) {
-      core.warning('[local-ai] PR has ≥50 changed files — GitHub API returns max 100. File list may be incomplete.')
+      core.warning('[step 2/5] 100 files returned — list may be truncated by GitHub API.')
     }
 
+    // 6. Build diff block
+    core.info('[step 3/5] Building diff block...')
     const MAX_PATCH_CHARS = 60_000
     let diffBlock = ''
     let truncated = false
 
     for (const f of files) {
-      if (!f.patch) continue
+      if (!f.patch) {
+        core.info(`  skip ${f.filename} — no patch`)
+        continue
+      }
       const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`
       if ((diffBlock + chunk).length > MAX_PATCH_CHARS) {
         truncated = true
+        core.warning(`[step 3/5] Diff truncated at ${MAX_PATCH_CHARS} chars — stopping at ${f.filename}`)
         break
       }
       diffBlock += chunk
     }
+    core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`)
 
     if (!diffBlock) {
-      core.info('[local-ai] No patchable diff content found — skipping review.')
+      core.info('[step 3/5] No patchable diff content — skipping review.')
       return
     }
-
     if (truncated) {
-      core.warning(`[local-ai] Diff truncated at ${MAX_PATCH_CHARS} chars (${files.length} files total)`)
       diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`
     }
 
+    // 7. Call model
     const instructions = [
       'You are a senior software engineer performing a concise, constructive code review.',
       'Focus on: bugs, security issues, Swift best practices, performance, and code clarity.',
@@ -291,45 +343,31 @@ async function run(): Promise<void> {
       ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
     ].join('\n')
 
-    core.info(`[local-ai] Calling ${model} via Ollama (timeout: ${timeoutSeconds}s)...`)
+    core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s)...`)
     let review = ''
     try {
-      review = localAiCli(bin, prompt, {
-        instructions,
-        model,
-        baseUrl,
-        temperature,
-        maximumResponseTokens,
-        timeoutSeconds,
-      })
+      review = localAiCli(bin, prompt, { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds })
     } catch (e) {
-      core.debug(`[local-ai] Attempt 1 error: ${String(e)}`)
+      core.warning(`[step 4/5] Attempt 1 failed: ${String(e)}`)
       if (isFatalError(e)) throw e
-      core.info('[local-ai] Attempt 1 failed — retrying in 15s (cold-start model load)...')
+      core.info('[step 4/5] Retrying in 15s (cold-start model load)...')
       await new Promise(r => setTimeout(r, 15_000))
-      review = localAiCli(bin, prompt, {
-        instructions,
-        model,
-        baseUrl,
-        temperature,
-        maximumResponseTokens,
-        timeoutSeconds,
-      })
+      core.info('[step 4/5] Attempt 2...')
+      review = localAiCli(bin, prompt, { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds })
     }
 
     if (!review) throw new Error('local-ai-cli returned empty output')
+    core.info(`[step 4/5] Model response: ${review.length} chars`)
 
+    // 8. Post comment
+    core.info('[step 5/5] Posting PR comment...')
     const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`
     const fullReview = review + signature
 
     const existingCommentId = await findExistingBotComment(octokit, owner, repoName, prNumber)
     if (existingCommentId) {
-      core.info(`[local-ai] Deleting previous bot review comment ${existingCommentId}`)
-      await octokit.rest.issues.deleteComment({
-        owner,
-        repo: repoName,
-        comment_id: existingCommentId,
-      })
+      core.info(`[step 5/5] Deleting previous bot comment ${existingCommentId}`)
+      await octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId })
     }
 
     const { data: comment } = await octokit.rest.issues.createComment({
@@ -339,7 +377,7 @@ async function run(): Promise<void> {
       body: fullReview,
     })
 
-    core.info(`[local-ai] Review posted: ${comment.html_url}`)
+    core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
 
     await core.summary
@@ -350,7 +388,7 @@ async function run(): Promise<void> {
       .addRaw(review)
       .write()
 
-    core.info('[local-ai] Done.')
+    core.info('=== local-ai-code-review-action done ===')
   } catch (error) {
     core.setFailed(error instanceof Error ? error.message : String(error))
   }
