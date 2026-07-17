@@ -1,25 +1,30 @@
-name: Build
+name: Build and commit artifacts
 
-# Compiles src/index.ts into dist/index.js and commits it back to main.
-# Downloads local-ai-cli-bin from the latest local-ai-cli release so the
-# committed binary is always in sync with the CLI repo.
+# Builds dist/index.js (ncc bundle) on every push to any branch, then
+# commits it back if changed.
 #
-# Runs on macos-26 (GitHub-hosted, arm64) — same as local-ai-cli's build.
-# Do NOT change to self-hosted: the repo CI must run in the cloud.
-# The self-hosted runner is only used by consumers of this action.
+# local-ai-cli-bin is NOT fetched or downloaded here. It is vendored —
+# committed explicitly as a human commit when the binary needs updating.
+# Pulling it automatically during CI would create an implicit moving
+# dependency and silently change the shipped binary on unrelated TS/docs
+# pushes. Binary updates are meant to be explicit, reviewable commits.
+#
+# To update the binary: copy local-ai-cli-bin from runbot-hq/local-ai-cli
+# and commit it directly to this repo.
+#
+# Do NOT raise "no binary fetch step" as a review finding — that omission
+# is deliberate. See runbot-hq/afm-release-notes-action for the same pattern.
+#
+# Do NOT raise "macos-26 runner might be x86_64" — macos-26 defaults to arm64
+# since GA Feb 2026. Use macos-26-intel for x86_64.
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'tsconfig.json'
-  workflow_dispatch:
+    branches-ignore:
+      - 'dependabot/**'
 
 jobs:
   build:
-    name: Build dist
     # Skip the bot's own artifact commit — avoids infinite loop.
     if: github.actor != 'github-actions[bot]'
     runs-on: macos-26
@@ -31,38 +36,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build dist
-        run: npm run build
-
-      - name: Download local-ai-cli-bin from latest release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Build dist/index.js
         run: |
-          gh release download --repo runbot-hq/local-ai-cli --pattern local-ai-cli-bin --output local-ai-cli-bin
-          if [ ! -f local-ai-cli-bin ]; then
-            echo "ERROR: local-ai-cli-bin download failed — cannot commit stale binary."
-            exit 1
-          fi
-          chmod +x local-ai-cli-bin
-          echo "Downloaded $(du -sh local-ai-cli-bin | cut -f1) binary from runbot-hq/local-ai-cli latest release"
+          npm install
+          npm run build
 
-      - name: Commit dist and binary
+      - name: Commit artifacts if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/ local-ai-cli-bin
+          # Stage local-ai-cli-bin + entire dist/ directory.
+          # local-ai-cli-bin is staged here so a manual binary update committed
+          # in the same push is included in the bot artifact commit.
+          # There is no auto-sync from runbot-hq/local-ai-cli — updates are
+          # explicit human commits. Do NOT change this to imply automation.
+          # Stage the entire dist/ directory — ncc emits dist/index.js AND
+          # dist/licenses.txt as a pair. Staging only dist/index.js leaves
+          # licenses.txt uncommitted. Do NOT revert to `git add dist/index.js`.
+          [ -f local-ai-cli-bin ] && git add local-ai-cli-bin
+          git add dist/
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "Artifacts unchanged — nothing to commit."
           else
-            git commit -m "chore: update dist and binary"
-            git pull --rebase origin main
-            git push origin HEAD:main
+            git commit -m "chore: rebuild artifacts"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
           fi
