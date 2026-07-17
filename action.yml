@@ -23,6 +23,10 @@ inputs:
     description: 'Max tokens in model response'
     required: false
     default: '2048'
+  timeout_seconds:
+    description: 'URLRequest timeout passed to local-ai-cli (seconds). Increase for large/slow models. spawnSync hard-kill is timeout_seconds + 60s.'
+    required: false
+    default: '600'
   prompt_extra:
     description: 'Extra instructions appended to the review prompt (max 300 chars)'
     required: false

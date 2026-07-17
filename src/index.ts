@@ -15,21 +15,14 @@ import * as os from 'os'
  * Ensures local-ai-cli-bin is present on the runner, downloading it from the
  * latest runbot-hq/local-ai-cli release if the cached copy is missing or stale.
  *
- * Uses the GitHub releases API (unauthenticated — public repo) + Node https.
- * No gh CLI, no curl, no external tools required on the runner.
- *
  * Cache location: ~/.cache/runbot-hq/local-ai-cli-bin
  * Staleness check: sha256 digest from the release asset metadata.
- * If the digest matches the cached binary, the download is skipped entirely.
- *
- * Returns the path to the executable binary.
  */
 async function ensureBinary(): Promise<string> {
   const cacheDir = path.join(os.homedir(), '.cache', 'runbot-hq')
   const binPath = path.join(cacheDir, 'local-ai-cli-bin')
   const digestPath = path.join(cacheDir, 'local-ai-cli-bin.digest')
 
-  // 1. Fetch latest release metadata from GitHub API (no auth needed — public repo)
   core.info('[local-ai] Checking latest local-ai-cli release...')
   const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest')
   const asset = (release.assets as Array<{ name: string; browser_download_url: string; digest?: string }>)
@@ -38,7 +31,6 @@ async function ensureBinary(): Promise<string> {
 
   const remoteDigest: string = asset.digest ?? ''
 
-  // 2. Check cache — skip download if digest matches
   if (fs.existsSync(binPath) && fs.existsSync(digestPath)) {
     const cachedDigest = fs.readFileSync(digestPath, 'utf8').trim()
     if (remoteDigest && cachedDigest === remoteDigest) {
@@ -50,13 +42,10 @@ async function ensureBinary(): Promise<string> {
     core.info('[local-ai] No cached binary — downloading...')
   }
 
-  // 3. Download binary
   fs.mkdirSync(cacheDir, { recursive: true })
-  const downloadUrl = asset.browser_download_url
-  core.info(`[local-ai] Downloading from ${downloadUrl}`)
-  await httpsDownload(downloadUrl, binPath)
+  core.info(`[local-ai] Downloading from ${asset.browser_download_url}`)
+  await httpsDownload(asset.browser_download_url, binPath)
 
-  // 4. Verify digest if available
   if (remoteDigest && remoteDigest.startsWith('sha256:')) {
     const expectedHex = remoteDigest.slice('sha256:'.length)
     const actualHex = sha256File(binPath)
@@ -70,17 +59,12 @@ async function ensureBinary(): Promise<string> {
     core.info(`[local-ai] Digest verified: sha256:${actualHex}`)
   }
 
-  // 5. Make executable and cache digest
   fs.chmodSync(binPath, 0o755)
   fs.writeFileSync(digestPath, remoteDigest, 'utf8')
   core.info(`[local-ai] Binary ready at ${binPath}`)
   return binPath
 }
 
-/**
- * Fetches a JSON response from a public HTTPS URL.
- * Follows redirects (up to 5 hops). Sets User-Agent to avoid GitHub API 403.
- */
 function httpsGetJson(url: string, redirectsLeft = 5): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
@@ -102,10 +86,6 @@ function httpsGetJson(url: string, redirectsLeft = 5): Promise<Record<string, un
   })
 }
 
-/**
- * Downloads a binary file from url to destPath, following redirects.
- * browser_download_url redirects through S3 — must follow at least one hop.
- */
 function httpsDownload(url: string, destPath: string, redirectsLeft = 5): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
@@ -126,7 +106,6 @@ function httpsDownload(url: string, destPath: string, redirectsLeft = 5): Promis
   })
 }
 
-/** Returns the hex-encoded sha256 digest of a file. */
 function sha256File(filePath: string): string {
   const buf = fs.readFileSync(filePath)
   return crypto.createHash('sha256').update(buf).digest('hex')
@@ -144,14 +123,8 @@ function sha256File(filePath: string): string {
  * shell metacharacter interpretation in prompt content.
  * Do NOT refactor to execSync with a shell string.
  *
- * Flag names mirror local-ai-cli exactly:
- *   --prompt                   → user message
- *   --instructions             → system prompt
- *   --model                    → Ollama model name
- *   --temperature              → sampling temperature
- *   --maximum-response-tokens  → num_predict
- *   --base-url                 → Ollama base URL
- *   --timeout                  → URLRequest timeout in seconds (default 300)
+ * spawnSyncTimeoutMs = timeoutSeconds + 60s buffer for process startup
+ * and response marshalling. Do NOT set it equal to or below timeoutSeconds.
  */
 function localAiCli(bin: string, prompt: string, options?: {
   instructions?: string
@@ -161,6 +134,7 @@ function localAiCli(bin: string, prompt: string, options?: {
   maximumResponseTokens?: number
   timeoutSeconds?: number
 }): string {
+  const timeoutSeconds = options?.timeoutSeconds ?? 600
   const args: string[] = ['--prompt', prompt]
 
   if (options?.instructions) args.push('--instructions', options.instructions)
@@ -168,9 +142,7 @@ function localAiCli(bin: string, prompt: string, options?: {
   if (options?.baseUrl)      args.push('--base-url', options.baseUrl)
   if (options?.temperature !== undefined) args.push('--temperature', String(options.temperature))
   if (options?.maximumResponseTokens !== undefined) args.push('--maximum-response-tokens', String(options.maximumResponseTokens))
-  // Always pass --timeout explicitly — URLSession.shared default is 60s which is
-  // insufficient for large model cold loads (qwen3.5:9b). Do NOT remove this.
-  args.push('--timeout', String(options?.timeoutSeconds ?? 300))
+  args.push('--timeout', String(timeoutSeconds))
 
   if (core.isDebug()) {
     core.debug(`[local-ai] spawnSync: ${bin} ${args.map(a => JSON.stringify(a)).join(' ')}`)
@@ -178,13 +150,9 @@ function localAiCli(bin: string, prompt: string, options?: {
 
   const result = spawnSync(bin, args, {
     encoding: 'utf8',
-    // 360s — must exceed the --timeout passed to the binary (300s) plus
-    // buffer for process startup and response marshalling.
-    // Do NOT lower below 300s.
-    timeout: 360_000,
-    // 10MB buffer — large model responses (4096 tokens of markdown) can exceed
-    // Node's default 1MB maxBuffer, causing a silent ENOBUFS truncation.
-    // Do NOT lower this value.
+    // Hard-kill at timeoutSeconds + 60s to give the binary time to respect
+    // its own --timeout before Node kills the process.
+    timeout: (timeoutSeconds + 60) * 1000,
     maxBuffer: 10 * 1024 * 1024,
   })
 
@@ -196,9 +164,6 @@ function localAiCli(bin: string, prompt: string, options?: {
   return result.stdout.trim()
 }
 
-/**
- * Returns true if the error is fatal and a retry cannot recover from it.
- */
 function isFatalError(e: unknown): boolean {
   const msg = String(e).toLowerCase()
   return (
@@ -209,12 +174,6 @@ function isFatalError(e: unknown): boolean {
   )
 }
 
-/**
- * Finds an existing bot review comment on the PR (identified by the signature).
- * Paginates through all comments — PRs with >100 comments would miss the old
- * bot comment without pagination, causing duplicate reviews to accumulate.
- * Returns the comment ID if found, otherwise undefined.
- */
 async function findExistingBotComment(
   octokit: ReturnType<typeof github.getOctokit>,
   owner: string,
@@ -245,13 +204,11 @@ async function run(): Promise<void> {
   try {
     if (core.getInput('debug') === 'true') process.env.ACTIONS_STEP_DEBUG = '1'
 
-    // 1. Validate GITHUB_TOKEN
     const token = process.env.GITHUB_TOKEN
     if (!token) throw new Error(
       'GITHUB_TOKEN is not set — add `env: GITHUB_TOKEN: ${{ github.token }}` to your workflow step.'
     )
 
-    // 2. Validate pull_request event context
     const context = github.context
     if (!context.payload.pull_request) {
       throw new Error(
@@ -266,20 +223,17 @@ async function run(): Promise<void> {
     const [owner, repoName] = repo.split('/')
     if (!owner || !repoName) throw new Error(`GITHUB_REPOSITORY is not set or malformed (got: "${repo}")`)
 
-    // 3. Read inputs
     const model                 = core.getInput('model')                  || 'qwen3.5:9b'
     const baseUrl               = core.getInput('base_url')               || 'http://localhost:11434'
     const temperature           = parseFloat(core.getInput('temperature') || '0.2')
     const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048')
+    const timeoutSeconds        = parseInt(core.getInput('timeout_seconds') || '600')
     const promptExtra           = core.getInput('prompt_extra').slice(0, 300)
 
-    // 4. Ensure binary — download from latest runbot-hq/local-ai-cli release if
-    //    not cached or stale. No vendored binary in this repo. No gh CLI required.
     const bin = await ensureBinary()
 
     const octokit = github.getOctokit(token)
 
-    // 5. Fetch PR changed files
     const { data: files } = await octokit.rest.pulls.listFiles({
       owner,
       repo: repoName,
@@ -296,7 +250,6 @@ async function run(): Promise<void> {
       core.warning('[local-ai] PR has ≥50 changed files — GitHub API returns max 100. File list may be incomplete.')
     }
 
-    // 6. Build diff block (cap at 60K chars to stay within model context)
     const MAX_PATCH_CHARS = 60_000
     let diffBlock = ''
     let truncated = false
@@ -321,7 +274,6 @@ async function run(): Promise<void> {
       diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`
     }
 
-    // 7. Build prompt
     const instructions = [
       'You are a senior software engineer performing a concise, constructive code review.',
       'Focus on: bugs, security issues, Swift best practices, performance, and code clarity.',
@@ -339,8 +291,7 @@ async function run(): Promise<void> {
       ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
     ].join('\n')
 
-    // 8. Call local-ai-cli with retry
-    core.info(`[local-ai] Calling ${model} via Ollama...`)
+    core.info(`[local-ai] Calling ${model} via Ollama (timeout: ${timeoutSeconds}s)...`)
     let review = ''
     try {
       review = localAiCli(bin, prompt, {
@@ -349,6 +300,7 @@ async function run(): Promise<void> {
         baseUrl,
         temperature,
         maximumResponseTokens,
+        timeoutSeconds,
       })
     } catch (e) {
       core.debug(`[local-ai] Attempt 1 error: ${String(e)}`)
@@ -361,16 +313,15 @@ async function run(): Promise<void> {
         baseUrl,
         temperature,
         maximumResponseTokens,
+        timeoutSeconds,
       })
     }
 
     if (!review) throw new Error('local-ai-cli returned empty output')
 
-    // 9. Append signature
     const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`
     const fullReview = review + signature
 
-    // 10. Delete previous bot comment
     const existingCommentId = await findExistingBotComment(octokit, owner, repoName, prNumber)
     if (existingCommentId) {
       core.info(`[local-ai] Deleting previous bot review comment ${existingCommentId}`)
@@ -381,7 +332,6 @@ async function run(): Promise<void> {
       })
     }
 
-    // 11. Post review as PR comment
     const { data: comment } = await octokit.rest.issues.createComment({
       owner,
       repo: repoName,
@@ -392,7 +342,6 @@ async function run(): Promise<void> {
     core.info(`[local-ai] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
 
-    // 12. Step summary
     await core.summary
       .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
       .addRaw(`**Model:** ${model}\n`)
