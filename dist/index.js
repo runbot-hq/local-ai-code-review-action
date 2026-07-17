@@ -29972,8 +29972,9 @@ const os = __importStar(__nccwpck_require__(857));
 // Shared constant — used both when appending the signature and when searching
 // for an existing bot comment. If you change this string, old comments will no
 // longer be found and deduplication will break silently.
-const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by [github.com/runbot-hq/run-bot]';
-const BOT_SIGNATURE = `\n\n---\n> 🤖 ${BOT_SIGNATURE_SEARCH_KEY}(https://github.com/runbot-hq/run-bot)`;
+// Plain text — no raw Markdown syntax. BOT_SIGNATURE constructs the link independently.
+const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
+const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
 // ---------------------------------------------------------------------------
 // Binary bootstrap
 // ---------------------------------------------------------------------------
@@ -30295,9 +30296,10 @@ async function run() {
         const temperature = parseFloat(core.getInput('temperature') || '0.2');
         const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048');
         const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600');
-        const promptExtra = core.getInput('prompt_extra').slice(0, 300);
-        if (promptExtra.length === 300)
+        const promptExtraRaw = core.getInput('prompt_extra');
+        if (promptExtraRaw.length > 300)
             core.warning('[init] prompt_extra was truncated to 300 chars');
+        const promptExtra = promptExtraRaw.slice(0, 300);
         core.info(`[init] Inputs: model=${model} base_url=${baseUrl} temperature=${temperature} max_tokens=${maximumResponseTokens} timeout=${timeoutSeconds}s`);
         // 4. Ensure binary (authenticated)
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
