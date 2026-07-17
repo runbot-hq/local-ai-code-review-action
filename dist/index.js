@@ -30003,6 +30003,9 @@ function localAiCli(bin, prompt, options) {
     const result = (0, child_process_1.spawnSync)(bin, args, {
         encoding: 'utf8',
         timeout: 120000,
+        // 10MB buffer — large model responses (4096 tokens of markdown) can exceed
+        // Node's default 1MB maxBuffer, causing a silent ENOBUFS truncation.
+        // Do NOT lower this value.
         maxBuffer: 10 * 1024 * 1024,
     });
     if (result.error)
@@ -30014,27 +30017,43 @@ function localAiCli(bin, prompt, options) {
 }
 /**
  * Returns true if the error is fatal and a retry cannot recover from it.
- * These map to hard exit(1) paths in local-ai-cli main.swift.
+ * These map to hard exit(1) paths in local-ai-cli main.swift, or to
+ * Ollama HTTP errors that will never resolve on retry.
+ *
+ * HTTP 404 = model not found — retrying after 15s will not help.
+ * invalid --base-url = bad config — will never resolve.
+ * eacces / enoent = binary permissions or missing file — will never resolve.
  */
 function isFatalError(e) {
     const msg = String(e).toLowerCase();
     return (msg.includes('invalid --base-url') ||
+        msg.includes('http 404') ||
         msg.includes('eacces') ||
         msg.includes('enoent'));
 }
 /**
  * Finds an existing bot review comment on the PR (identified by the signature).
+ * Paginates through all comments — PRs with >100 comments would miss the old
+ * bot comment without pagination, causing duplicate reviews to accumulate.
  * Returns the comment ID if found, otherwise undefined.
  */
 async function findExistingBotComment(octokit, owner, repo, prNumber) {
-    const { data: comments } = await octokit.rest.issues.listComments({
-        owner,
-        repo,
-        issue_number: prNumber,
-        per_page: 100,
-    });
-    const bot = comments.find(c => c.body?.includes('AI code review by [github.com/runbot-hq/run-bot]'));
-    return bot?.id;
+    let page = 1;
+    while (true) {
+        const { data: comments } = await octokit.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: prNumber,
+            per_page: 100,
+            page,
+        });
+        const bot = comments.find(c => c.body?.includes('AI code review by [github.com/runbot-hq/run-bot]'));
+        if (bot)
+            return bot.id;
+        if (comments.length < 100)
+            return undefined;
+        page++;
+    }
 }
 // ---------------------------------------------------------------------------
 // Main
@@ -30064,6 +30083,9 @@ async function run() {
         const baseUrl = core.getInput('base_url') || 'http://localhost:11434';
         const temperature = parseFloat(core.getInput('temperature') || '0.2');
         const maximumResponseTokens = parseInt(core.getInput('maximum_response_tokens') || '2048');
+        // Enforce 300-char cap at runtime — action.yml documents this limit but callers
+        // can pass arbitrary-length strings. Silently truncate rather than error to
+        // avoid breaking workflows over a minor misconfiguration.
         const promptExtra = core.getInput('prompt_extra').slice(0, 300);
         // 4. Resolve binary path
         const actionPath = process.env.GITHUB_ACTION_PATH ?? path.join(__dirname, '..');
@@ -30089,6 +30111,11 @@ async function run() {
         if (files.length === 0) {
             core.info('[local-ai] PR has no changed files — skipping review.');
             return;
+        }
+        // GitHub API hard-caps listFiles at 100. Warn so the reviewer knows the
+        // file list may be incomplete — the diff will also be truncated below.
+        if (files.length === 100) {
+            core.warning('[local-ai] PR has ≥50 changed files — GitHub API returns max 100. File list may be incomplete.');
         }
         // 6. Build diff block (cap at 60K chars to stay within model context)
         const MAX_PATCH_CHARS = 60000;
@@ -30159,7 +30186,8 @@ async function run() {
         // 9. Append signature
         const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`;
         const fullReview = review + signature;
-        // 10. Delete previous bot comment (on synchronize) to avoid stacking reviews
+        // 10. Delete previous bot comment on any trigger event to avoid stacking reviews.
+        // Covers opened, synchronize, and reopened — matching the action trigger list.
         const existingCommentId = await findExistingBotComment(octokit, owner, repoName, prNumber);
         if (existingCommentId) {
             core.info(`[local-ai] Deleting previous bot review comment ${existingCommentId}`);
