@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import { spawnSync } from 'child_process'
+import { spawnSync, execSync } from 'child_process'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as https from 'https'
@@ -132,6 +132,80 @@ function sha256File(filePath: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Network diagnostics
+// ---------------------------------------------------------------------------
+
+function networkDiag(label: string): void {
+  core.info(`[net-diag:${label}] --- network diagnostics ---`)
+  try {
+    const zen = execSync('curl -sv https://api.github.com/zen 2>&1', { timeout: 10000 }).toString().trim()
+    core.info(`[net-diag:${label}] curl api.github.com/zen: ${zen}`)
+  } catch (e) {
+    core.info(`[net-diag:${label}] curl api.github.com/zen FAILED: ${String(e)}`)
+  }
+  try {
+    const dns = execSync('nslookup api.github.com 2>&1', { timeout: 5000 }).toString().trim()
+    core.info(`[net-diag:${label}] nslookup api.github.com: ${dns}`)
+  } catch (e) {
+    core.info(`[net-diag:${label}] nslookup FAILED: ${String(e)}`)
+  }
+  try {
+    const tcp = execSync('nc -zv -w5 api.github.com 443 2>&1', { timeout: 8000 }).toString().trim()
+    core.info(`[net-diag:${label}] nc tcp:443: ${tcp}`)
+  } catch (e) {
+    core.info(`[net-diag:${label}] nc tcp:443 FAILED: ${String(e)}`)
+  }
+  try {
+    const netstat = execSync('netstat -an | grep ESTABLISHED | grep 443 | head -10 2>&1', { timeout: 5000 }).toString().trim()
+    core.info(`[net-diag:${label}] established :443 connections:\n${netstat || '(none)'}`)
+  } catch (e) {
+    core.info(`[net-diag:${label}] netstat FAILED: ${String(e)}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Retryable GitHub API call
+// ---------------------------------------------------------------------------
+
+function isRetryableError(e: unknown): boolean {
+  const msg = String(e).toLowerCase()
+  return (
+    msg.includes('epipe') ||
+    msg.includes('econnreset') ||
+    msg.includes('other side closed') ||
+    msg.includes('socket hang up') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout')
+  )
+}
+
+async function withRetry<T>(label: string, fn: () => Promise<T>, maxAttempts = 3, delayMs = 3000): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    core.info(`[${label}] attempt ${attempt}/${maxAttempts}`)
+    try {
+      const result = await fn()
+      core.info(`[${label}] attempt ${attempt} succeeded`)
+      return result
+    } catch (e) {
+      core.warning(`[${label}] attempt ${attempt} failed: ${String(e)}`)
+      if (attempt === maxAttempts) {
+        networkDiag(label)
+        throw e
+      }
+      if (!isRetryableError(e)) {
+        core.info(`[${label}] non-retryable error — not retrying`)
+        networkDiag(label)
+        throw e
+      }
+      core.info(`[${label}] retryable error — waiting ${delayMs}ms then retrying...`)
+      networkDiag(label)
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+  throw new Error(`[${label}] exhausted all attempts`)
+}
+
+// ---------------------------------------------------------------------------
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
@@ -208,8 +282,10 @@ async function findExistingBotComment(
   repo: string,
   prNumber: number
 ): Promise<number | undefined> {
+  core.info(`[step 5/5] searching for existing bot comment on PR #${prNumber}...`)
   let page = 1
   while (true) {
+    core.info(`[step 5/5] listComments page=${page}`)
     const { data: comments } = await octokit.rest.issues.listComments({
       owner,
       repo,
@@ -217,9 +293,16 @@ async function findExistingBotComment(
       per_page: 100,
       page,
     })
+    core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`)
     const bot = comments.find(c => c.body?.includes('AI code review by [github.com/runbot-hq/run-bot]'))
-    if (bot) return bot.id
-    if (comments.length < 100) return undefined
+    if (bot) {
+      core.info(`[step 5/5] found existing bot comment id=${bot.id}`)
+      return bot.id
+    }
+    if (comments.length < 100) {
+      core.info(`[step 5/5] no existing bot comment found`)
+      return undefined
+    }
     page++
   }
 }
@@ -359,23 +442,40 @@ async function run(): Promise<void> {
     if (!review) throw new Error('local-ai-cli returned empty output')
     core.info(`[step 4/5] Model response: ${review.length} chars`)
 
-    // 8. Post comment
+    // 8. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
     core.info('[step 5/5] Posting PR comment...')
+    core.info(`[step 5/5] review body length: ${review.length} chars`)
+
+    // Run network diagnostics before touching the GitHub API after the long model call
+    networkDiag('pre-post')
+
     const signature = `\n\n---\n> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)`
     const fullReview = review + signature
+    core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
-    const existingCommentId = await findExistingBotComment(octokit, owner, repoName, prNumber)
+    const existingCommentId = await withRetry('find-comment', () =>
+      findExistingBotComment(octokit, owner, repoName, prNumber)
+    )
+
     if (existingCommentId) {
-      core.info(`[step 5/5] Deleting previous bot comment ${existingCommentId}`)
-      await octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId })
+      core.info(`[step 5/5] deleting previous bot comment id=${existingCommentId}...`)
+      await withRetry('delete-comment', () =>
+        octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId })
+      )
+      core.info(`[step 5/5] previous bot comment deleted`)
+    } else {
+      core.info(`[step 5/5] no previous bot comment to delete`)
     }
 
-    const { data: comment } = await octokit.rest.issues.createComment({
-      owner,
-      repo: repoName,
-      issue_number: prNumber,
-      body: fullReview,
-    })
+    core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`)
+    const { data: comment } = await withRetry('create-comment', () =>
+      octokit.rest.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: prNumber,
+        body: fullReview,
+      })
+    )
 
     core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
