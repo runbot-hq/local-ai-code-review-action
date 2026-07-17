@@ -1,5 +1,7 @@
 # local-ai-code-review-action
 
+![Binary downloads](https://img.shields.io/github/downloads/runbot-hq/local-ai-cli/total?label=binary%20downloads&color=purple&logo=github)
+
 A GitHub Action that reviews pull request diffs using a local [Ollama](https://ollama.com) model on a self-hosted runner. No cloud API, no API keys, no cost per review.
 
 Powered by [`local-ai-cli`](https://github.com/runbot-hq/local-ai-cli). Works with any model Ollama supports — recommended: `qwen3.5:9b` or `codegeex4:9b` on Apple Silicon (16GB RAM).
