@@ -152,6 +152,12 @@ function httpsGetJson(url: string, token?: string, redirectsLeft = 5): Promise<R
   })
 }
 
+// Auth token is intentionally NOT forwarded here. browser_download_url for
+// public GitHub releases resolves via a 302 redirect to an unauthenticated
+// S3/CDN URL — sending a Bearer token to that URL is both unnecessary and
+// would cause a 400. If this action is ever used against a private release
+// repo, this function will need to use the GitHub API asset-download endpoint
+// with an Authorization header instead.
 function httpsDownload(url: string, destPath: string, redirectsLeft = 5): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
@@ -181,6 +187,10 @@ function sha256File(filePath: string): string {
 // Network diagnostics
 // ---------------------------------------------------------------------------
 
+// execSync is safe here: every command string is a hardcoded literal with no
+// user-controlled input interpolated. This is the specific condition that makes
+// execSync acceptable — contrast with localAiCli below, where user-supplied
+// prompt/instructions are passed as argv via spawnSync to prevent shell injection.
 function networkDiag(label: string): void {
   core.info(`[net-diag:${label}] --- network diagnostics ---`)
   try {
@@ -425,7 +435,7 @@ async function run(): Promise<void> {
     const model          = core.getInput('model')     || 'qwen3.5:9b'
     const baseUrl        = core.getInput('base_url')  || 'http://localhost:11434'
     const temperature    = parseFloat(core.getInput('temperature') || '0.2')
-    const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600')
+    const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600', 10)
     const promptExtraRaw = core.getInput('prompt_extra')
     if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     const promptExtra    = promptExtraRaw.slice(0, 300)
@@ -452,9 +462,9 @@ async function run(): Promise<void> {
     // tier-driven: 4096 for shallow reviews (< 150 reviewable lines) and 8192
     // for deep reviews (≥ 150 reviewable lines), applied below after tier
     // selection. Setting this input explicitly overrides the tier default.
-    const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
-      ? parseInt(core.getInput('maximum_response_tokens'))
-      : undefined
+    // Radix 10 is explicit to prevent misparse of '0'-prefixed strings as octal.
+    const rawMaxTokens = core.getInput('maximum_response_tokens')
+    const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined
 
     // 4. Ensure binary (authenticated)
     // dist/index.js is a committed build artifact (produced by `npm run build`
