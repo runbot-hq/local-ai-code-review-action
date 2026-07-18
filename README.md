@@ -34,7 +34,6 @@ jobs:
         with:
           model: qwen3.5:9b
           temperature: '0.2'
-          maximum_response_tokens: '2048'
 ```
 
 ## Inputs
@@ -44,8 +43,10 @@ jobs:
 | `model` | `qwen3.5:9b` | Any model pulled via `ollama pull` |
 | `base_url` | `http://localhost:11434` | Ollama base URL |
 | `temperature` | `0.2` | Sampling temperature (0.0–1.0) |
-| `maximum_response_tokens` | `2048` | Max tokens to generate |
+| `maximum_response_tokens` | `4096` / `8192` | Max tokens to generate. Automatically set by review tier: `4096` for shallow (< 150 reviewable lines), `8192` for deep. Override by setting this input explicitly. |
+| `timeout_seconds` | `600` | URLRequest timeout in seconds. Increase for large or slow models. |
 | `prompt_extra` | *(none)* | Extra instructions appended to the review prompt (max 300 chars) |
+| `replace_existing_comment` | `false` | When `false` (default), each review run appends a new comment — full review history is preserved. When `true`, the previous bot comment is deleted before posting a new one (single living comment per PR). |
 | `debug` | `false` | Enable debug logging |
 
 ## Outputs

@@ -29969,10 +29969,12 @@ const fs = __importStar(__nccwpck_require__(9896));
 const https = __importStar(__nccwpck_require__(5692));
 const crypto = __importStar(__nccwpck_require__(6982));
 const os = __importStar(__nccwpck_require__(857));
-// Shared constant — used both when appending the signature and when searching
-// for an existing bot comment. If you change this string, old comments will no
-// longer be found and deduplication will break silently.
-// Plain text — no raw Markdown syntax. BOT_SIGNATURE constructs the link independently.
+// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
+// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
+// so it can be matched reliably with String.includes()).
+// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
+// Do NOT merge them — if the footer text ever changes, search would break
+// for comments posted under the old format.
 const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
 const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
 // ---------------------------------------------------------------------------
@@ -30099,6 +30101,12 @@ function httpsGetJson(url, token, redirectsLeft = 5) {
         req.on('error', reject);
     });
 }
+// Auth token is intentionally NOT forwarded here. browser_download_url for
+// public GitHub releases resolves via a 302 redirect to an unauthenticated
+// S3/CDN URL — sending a Bearer token to that URL is both unnecessary and
+// would cause a 400. If this action is ever used against a private release
+// repo, this function will need to use the GitHub API asset-download endpoint
+// with an Authorization header instead.
 function httpsDownload(url, destPath, redirectsLeft = 5) {
     return new Promise((resolve, reject) => {
         const req = https.get(url, {
@@ -30127,6 +30135,10 @@ function sha256File(filePath) {
 // ---------------------------------------------------------------------------
 // Network diagnostics
 // ---------------------------------------------------------------------------
+// execSync is safe here: every command string is a hardcoded literal with no
+// user-controlled input interpolated. This is the specific condition that makes
+// execSync acceptable — contrast with localAiCli below, where user-supplied
+// prompt/instructions are passed as argv via spawnSync to prevent shell injection.
 function networkDiag(label) {
     core.info(`[net-diag:${label}] --- network diagnostics ---`);
     try {
@@ -30199,11 +30211,11 @@ async function withRetry(label, fn, maxAttempts = 3, delayMs = 3000) {
 // ---------------------------------------------------------------------------
 // CLI wrapper
 // ---------------------------------------------------------------------------
-/**
- * Calls local-ai-cli-bin via spawnSync with an explicit argv array.
- * spawnSync passes args directly to the OS without a shell — no metacharacter risk.
- * Do NOT refactor to execSync.
- */
+// IMPORTANT: Do NOT refactor localAiCli to use execSync.
+// spawnSync passes argv directly to the OS without a shell interpreter.
+// execSync runs via /bin/sh — any shell metacharacter in the prompt or
+// instructions (backticks, $(), quotes, semicolons, etc.) would be executed.
+// spawnSync eliminates that entire attack surface. This is intentional.
 function localAiCli(bin, prompt, options) {
     const timeoutSeconds = options?.timeoutSeconds ?? 600;
     const args = ['--prompt', prompt];
@@ -30230,6 +30242,8 @@ function localAiCli(bin, prompt, options) {
     const result = (0, child_process_1.spawnSync)(bin, args, {
         encoding: 'utf8',
         timeout: spawnTimeoutMs,
+        // 10 MB buffer — model output for large PRs can be verbose. Raises an
+        // error rather than silently truncating if the limit is ever exceeded.
         maxBuffer: 10 * 1024 * 1024,
     });
     const callMs = Date.now() - callStart;
@@ -30262,8 +30276,27 @@ function isEmptyThinkExhaust(e, think) {
     return (msg.includes('empty response') &&
         (msg.includes('done_reason=stop') || msg.includes('done_reason=length')));
 }
-async function findExistingBotComment(octokit, owner, repo, prNumber) {
-    core.info(`[step 5/5] searching for existing bot comment on PR #${prNumber}...`);
+// Returns the IDs of ALL bot comments on the PR across all pages.
+//
+// API scope: uses issues.listComments, which returns top-level PR comments
+// (the kind posted via issues.createComment). It does NOT return inline review
+// thread comments (posted via pulls.createReviewComment). This is intentional
+// and correct — the action posts via issues.createComment, so search scope
+// matches write scope. If the posting API ever changes to pulls.createReviewComment,
+// this function would need to be updated accordingly.
+//
+// Uses filter (not find/early-exit) so all stale bot comments from prior failed
+// runs are collected, not just the first one found.
+//
+// Deduplicates the returned IDs with Set in case withRetry re-runs the
+// pagination from page 1 after a mid-page transient failure — without
+// deduplication, a 404 on an already-deleted ID would abort the delete loop.
+//
+// Only called when replaceExistingComment === true; never invoked in the
+// default append path so there is no latency cost for the common case.
+async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
+    core.info(`[step 5/5] searching for existing bot comments on PR #${prNumber}...`);
+    const ids = [];
     let page = 1;
     while (true) {
         core.info(`[step 5/5] listComments page=${page}`);
@@ -30275,17 +30308,23 @@ async function findExistingBotComment(octokit, owner, repo, prNumber) {
             page,
         });
         core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`);
-        const bot = comments.find(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY));
-        if (bot) {
-            core.info(`[step 5/5] found existing bot comment id=${bot.id}`);
-            return bot.id;
-        }
-        if (comments.length < 100) {
-            core.info(`[step 5/5] no existing bot comment found`);
-            return undefined;
-        }
+        const botIds = comments
+            .filter(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
+            .map(c => c.id);
+        ids.push(...botIds);
+        // Standard pagination sentinel: fewer than per_page results means last page.
+        // If comments.length === 100, there may be more — loop continues.
+        if (comments.length < 100)
+            break;
         page++;
     }
+    // Deduplicate: withRetry restarts pagination from page 1 on transient failure,
+    // so IDs from already-scanned pages may appear twice. A 404 on a duplicate
+    // delete is not in isRetryableError and would abort the loop, leaving
+    // remaining comments un-deleted. Set eliminates that risk cheaply.
+    const uniqueIds = [...new Set(ids)];
+    core.info(`[step 5/5] found ${uniqueIds.length} existing bot comment(s): ${uniqueIds.join(', ') || '(none)'}`);
+    return uniqueIds;
 }
 // ---------------------------------------------------------------------------
 // Main
@@ -30321,22 +30360,52 @@ async function run() {
         const model = core.getInput('model') || 'qwen3.5:9b';
         const baseUrl = core.getInput('base_url') || 'http://localhost:11434';
         const temperature = parseFloat(core.getInput('temperature') || '0.2');
-        const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600');
+        const timeoutSeconds = parseInt(core.getInput('timeout_seconds') || '600', 10);
         const promptExtraRaw = core.getInput('prompt_extra');
         if (promptExtraRaw.length > 300)
             core.warning('[init] prompt_extra was truncated to 300 chars');
         const promptExtra = promptExtraRaw.slice(0, 300);
-        // maximum_response_tokens: if caller explicitly sets it, honour it;
-        // otherwise the tier selection below sets the appropriate default.
-        const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
-            ? parseInt(core.getInput('maximum_response_tokens'))
-            : undefined;
+        // === replace_existing_comment ===
+        // core.getInput() ALWAYS returns a string — never a boolean — regardless of
+        // how the value is declared in action.yml. The default: 'false' in action.yml
+        // is correct string syntax per the GitHub Actions spec; it is not a type error.
+        // The === 'true' comparison is therefore the correct and idiomatic idiom here.
+        // Any value other than the string 'true' (including empty string, the default)
+        // safely resolves to false — no existing workflow is affected by this input.
+        // The warning below catches common YAML misconfigurations like `yes` or `True`
+        // that would silently behave as false without it.
+        const rawReplaceExistingComment = core.getInput('replace_existing_comment');
+        if (rawReplaceExistingComment && rawReplaceExistingComment !== 'true' && rawReplaceExistingComment !== 'false') {
+            core.warning(`[init] replace_existing_comment: unrecognised value "${rawReplaceExistingComment}" — treating as false. Use 'true' or 'false'.`);
+        }
+        const replaceExistingComment = rawReplaceExistingComment === 'true';
+        core.info(`[init] replace_existing_comment: ${replaceExistingComment}`);
+        // === maximum_response_tokens ===
+        // There is intentionally NO hardcoded default here. action.yml does not
+        // declare a default for this input either. The actual runtime defaults are
+        // tier-driven: 4096 for shallow reviews (< 150 reviewable lines) and 8192
+        // for deep reviews (≥ 150 reviewable lines), applied below after tier
+        // selection. Setting this input explicitly overrides the tier default.
+        // Radix 10 is explicit to prevent misparse of '0'-prefixed strings as octal.
+        const rawMaxTokens = core.getInput('maximum_response_tokens');
+        const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined;
         // 4. Ensure binary (authenticated)
+        // dist/index.js is a committed build artifact (produced by `npm run build`
+        // which runs ncc). It is rebuilt automatically by .github/workflows/build.yml
+        // on every push to main. Do NOT raise "dist/index.js should not be committed"
+        // — committing dist is the standard convention for GitHub Actions written in
+        // TypeScript/JavaScript so the action can run without a separate build step.
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await ensureBinary(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         const octokit = github.getOctokit(token);
         // 5. Fetch PR files
+        // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
+        // paginated. The GitHub API hard-limit for this endpoint is also 3000 files,
+        // but in practice PRs with >100 changed files produce diffs that far exceed
+        // the MAX_PATCH_CHARS budget anyway. The files.length === 100 warning below
+        // surfaces the truncation in CI logs. Paginating here would add complexity
+        // without meaningfully improving review quality for such large PRs.
         core.info('[step 2/5] Fetching PR changed files...');
         const { data: files } = await octokit.rest.pulls.listFiles({
             owner,
@@ -30356,6 +30425,11 @@ async function run() {
             core.warning('[step 2/5] 100 files returned — list may be truncated by GitHub API.');
         }
         // 6. Select review tier based on reviewable lines
+        // Tier drives both think-mode and the maximum_response_tokens default.
+        // shallow: < 150 reviewable lines — think=false, max_tokens=4096
+        // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
+        // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
+        // small enough that extended thinking adds latency without improving output.
         const { tier, reviewableLines } = selectTier(files);
         const think = tier === 'deep';
         const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
@@ -30400,6 +30474,8 @@ async function run() {
             `PR #${prNumber}: "${prTitle}"`,
             '',
             diffBlock,
+            // prompt_extra is capped at 300 chars to prevent prompt injection via
+            // workflow inputs and to keep the prompt size predictable across tiers.
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
         core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think})...`);
@@ -30429,17 +30505,36 @@ async function run() {
         // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
+        core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
         networkDiag('pre-post');
         const fullReview = review + BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
-        const existingCommentId = await withRetry('find-comment', () => findExistingBotComment(octokit, owner, repoName, prNumber));
-        if (existingCommentId) {
-            core.info(`[step 5/5] deleting previous bot comment id=${existingCommentId}...`);
-            await withRetry('delete-comment', () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId }));
-            core.info(`[step 5/5] previous bot comment deleted`);
+        if (replaceExistingComment) {
+            // Delete ALL existing bot comments before posting a fresh one.
+            //
+            // Per-comment withRetry labels (delete-comment-{id}) are intentional —
+            // they make individual deletion failures identifiable in CI logs without
+            // conflating retries across different comment IDs.
+            //
+            // Ordering is load-bearing: a throw mid-loop exits before createComment
+            // is reached, so no new comment is posted on partial failure. The PR is
+            // left in a partially-cleaned state, but the next run will catch any
+            // survivors via findAllBotCommentIds and clean them up (self-healing).
+            const existingIds = await withRetry('find-comments', () => findAllBotCommentIds(octokit, owner, repoName, prNumber));
+            for (const id of existingIds) {
+                core.info(`[step 5/5] deleting bot comment id=${id}...`);
+                await withRetry(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
+                core.info(`[step 5/5] deleted bot comment id=${id}`);
+            }
+            if (existingIds.length === 0) {
+                core.info(`[step 5/5] no previous bot comments to delete`);
+            }
         }
         else {
-            core.info(`[step 5/5] no previous bot comment to delete`);
+            // Default path (replace_existing_comment=false): skip the find+delete
+            // entirely — no API calls, no latency. Every review run appends a new
+            // comment so the full review history is preserved on the PR thread.
+            core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`);
         }
         core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`);
         const { data: comment } = await withRetry('create-comment', () => octokit.rest.issues.createComment({
