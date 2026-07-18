@@ -7,10 +7,12 @@ import * as https from 'https'
 import * as crypto from 'crypto'
 import * as os from 'os'
 
-// Shared constant — used both when appending the signature and when searching
-// for an existing bot comment. If you change this string, old comments will no
-// longer be found and deduplication will break silently.
-// Plain text — no raw Markdown syntax. BOT_SIGNATURE constructs the link independently.
+// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
+// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
+// so it can be matched reliably with String.includes()).
+// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
+// Do NOT merge them — if the footer text ever changes, search would break
+// for comments posted under the old format.
 const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot'
 const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`
 
@@ -253,11 +255,11 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, maxAttempts = 3
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
-/**
- * Calls local-ai-cli-bin via spawnSync with an explicit argv array.
- * spawnSync passes args directly to the OS without a shell — no metacharacter risk.
- * Do NOT refactor to execSync.
- */
+// IMPORTANT: Do NOT refactor localAiCli to use execSync.
+// spawnSync passes argv directly to the OS without a shell interpreter.
+// execSync runs via /bin/sh — any shell metacharacter in the prompt or
+// instructions (backticks, $(), quotes, semicolons, etc.) would be executed.
+// spawnSync eliminates that entire attack surface. This is intentional.
 function localAiCli(bin: string, prompt: string, options?: {
   instructions?: string
   model?: string
@@ -331,9 +333,12 @@ function isEmptyThinkExhaust(e: unknown, think: boolean): boolean {
   )
 }
 
-// Returns the IDs of ALL existing bot comments on the PR, across all pages.
-// Using filter (not find) so that multiple stale comments from failed prior
-// runs are all collected and can be deleted before posting a fresh one.
+// Returns the IDs of ALL bot comments on the PR across all pages.
+// Intentionally uses filter (not find/early-exit) so that multiple stale bot
+// comments — e.g. from a run where a prior deletion failed mid-way — are all
+// collected and can be deleted before posting a fresh one.
+// Only called when replaceExistingComment === true; never invoked in the
+// default append path so there is no latency cost for the common case.
 async function findAllBotCommentIds(
   octokit: ReturnType<typeof github.getOctokit>,
   owner: string,
@@ -407,22 +412,39 @@ async function run(): Promise<void> {
     const promptExtraRaw = core.getInput('prompt_extra')
     if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     const promptExtra    = promptExtraRaw.slice(0, 300)
-    // When true, ALL previous bot comments are deleted before posting a new one
-    // (single living comment per PR). When false (default), all review comments
-    // are preserved, giving a full history of reviews on the PR thread.
+
+    // === replace_existing_comment ===
+    // core.getInput() ALWAYS returns a string — never a boolean — regardless of
+    // how the value is declared in action.yml. The default: 'false' in action.yml
+    // is correct string syntax per the GitHub Actions spec; it is not a type error.
+    // The === 'true' comparison is therefore the correct and idiomatic idiom here.
+    // Any value other than the string 'true' (including empty string, the default)
+    // safely resolves to false — no existing workflow is affected by this input.
+    // The warning below catches common YAML misconfigurations like `yes` or `True`
+    // that would silently behave as false without it.
     const rawReplaceExistingComment = core.getInput('replace_existing_comment')
     if (rawReplaceExistingComment && rawReplaceExistingComment !== 'true' && rawReplaceExistingComment !== 'false') {
       core.warning(`[init] replace_existing_comment: unrecognised value "${rawReplaceExistingComment}" — treating as false. Use 'true' or 'false'.`)
     }
     const replaceExistingComment = rawReplaceExistingComment === 'true'
     core.info(`[init] replace_existing_comment: ${replaceExistingComment}`)
-    // maximum_response_tokens: if caller explicitly sets it, honour it;
-    // otherwise the tier selection below sets the appropriate default (4096 shallow / 8192 deep).
+
+    // === maximum_response_tokens ===
+    // There is intentionally NO hardcoded default here. action.yml does not
+    // declare a default for this input either. The actual runtime defaults are
+    // tier-driven: 4096 for shallow reviews (< 150 reviewable lines) and 8192
+    // for deep reviews (≥ 150 reviewable lines), applied below after tier
+    // selection. Setting this input explicitly overrides the tier default.
     const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
       ? parseInt(core.getInput('maximum_response_tokens'))
       : undefined
 
     // 4. Ensure binary (authenticated)
+    // dist/index.js is a committed build artifact (produced by `npm run build`
+    // which runs ncc). It is rebuilt automatically by .github/workflows/build.yml
+    // on every push to main. Do NOT raise "dist/index.js should not be committed"
+    // — committing dist is the standard convention for GitHub Actions written in
+    // TypeScript/JavaScript so the action can run without a separate build step.
     core.info('[step 1/5] Ensuring local-ai-cli binary...')
     const bin = await ensureBinary(token)
     core.info(`[step 1/5] Binary ready: ${bin}`)
@@ -451,6 +473,9 @@ async function run(): Promise<void> {
     }
 
     // 6. Select review tier based on reviewable lines
+    // Tier drives both think-mode and the maximum_response_tokens default.
+    // shallow: < 150 reviewable lines — think=false, max_tokens=4096
+    // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
     const { tier, reviewableLines } = selectTier(files)
     const think = tier === 'deep'
     const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096)
@@ -536,9 +561,12 @@ async function run(): Promise<void> {
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
     if (replaceExistingComment) {
-      // Collect ALL existing bot comments and delete each one before posting a
-      // fresh review. Using findAll (not find) so stale duplicates from prior
-      // failed runs don't accumulate alongside the new comment.
+      // Delete ALL existing bot comments before posting a fresh one.
+      // findAllBotCommentIds uses filter (not find) so multiple stale comments
+      // from failed prior runs are all removed, not just the first one found.
+      // Per-comment withRetry labels (delete-comment-{id}) are intentional —
+      // they make individual deletion failures identifiable in CI logs without
+      // conflating retries across different comment IDs.
       const existingIds = await withRetry('find-comments', () =>
         findAllBotCommentIds(octokit, owner, repoName, prNumber)
       )
@@ -553,6 +581,9 @@ async function run(): Promise<void> {
         core.info(`[step 5/5] no previous bot comments to delete`)
       }
     } else {
+      // Default path (replace_existing_comment=false): skip the find+delete
+      // entirely — no API calls, no latency. Every review run appends a new
+      // comment so the full review history is preserved on the PR thread.
       core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`)
     }
 
