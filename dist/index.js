@@ -30265,9 +30265,21 @@ function isEmptyThinkExhaust(e, think) {
         (msg.includes('done_reason=stop') || msg.includes('done_reason=length')));
 }
 // Returns the IDs of ALL bot comments on the PR across all pages.
-// Intentionally uses filter (not find/early-exit) so that multiple stale bot
-// comments — e.g. from a run where a prior deletion failed mid-way — are all
-// collected and can be deleted before posting a fresh one.
+//
+// API scope: uses issues.listComments, which returns top-level PR comments
+// (the kind posted via issues.createComment). It does NOT return inline review
+// thread comments (posted via pulls.createReviewComment). This is intentional
+// and correct — the action posts via issues.createComment, so search scope
+// matches write scope. If the posting API ever changes to pulls.createReviewComment,
+// this function would need to be updated accordingly.
+//
+// Uses filter (not find/early-exit) so all stale bot comments from prior failed
+// runs are collected, not just the first one found.
+//
+// Deduplicates the returned IDs with Set in case withRetry re-runs the
+// pagination from page 1 after a mid-page transient failure — without
+// deduplication, a 404 on an already-deleted ID would abort the delete loop.
+//
 // Only called when replaceExistingComment === true; never invoked in the
 // default append path so there is no latency cost for the common case.
 async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
@@ -30292,8 +30304,13 @@ async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
             break;
         page++;
     }
-    core.info(`[step 5/5] found ${ids.length} existing bot comment(s): ${ids.join(', ') || '(none)'}`);
-    return ids;
+    // Deduplicate: withRetry restarts pagination from page 1 on transient failure,
+    // so IDs from already-scanned pages may appear twice. A 404 on a duplicate
+    // delete is not in isRetryableError and would abort the loop, leaving
+    // remaining comments un-deleted. Set eliminates that risk cheaply.
+    const uniqueIds = [...new Set(ids)];
+    core.info(`[step 5/5] found ${uniqueIds.length} existing bot comment(s): ${uniqueIds.join(', ') || '(none)'}`);
+    return uniqueIds;
 }
 // ---------------------------------------------------------------------------
 // Main
@@ -30470,11 +30487,15 @@ async function run() {
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
         if (replaceExistingComment) {
             // Delete ALL existing bot comments before posting a fresh one.
-            // findAllBotCommentIds uses filter (not find) so multiple stale comments
-            // from failed prior runs are all removed, not just the first one found.
+            //
             // Per-comment withRetry labels (delete-comment-{id}) are intentional —
             // they make individual deletion failures identifiable in CI logs without
             // conflating retries across different comment IDs.
+            //
+            // Ordering is load-bearing: a throw mid-loop exits before createComment
+            // is reached, so no new comment is posted on partial failure. The PR is
+            // left in a partially-cleaned state, but the next run will catch any
+            // survivors via findAllBotCommentIds and clean them up (self-healing).
             const existingIds = await withRetry('find-comments', () => findAllBotCommentIds(octokit, owner, repoName, prNumber));
             for (const id of existingIds) {
                 core.info(`[step 5/5] deleting bot comment id=${id}...`);
