@@ -331,13 +331,17 @@ function isEmptyThinkExhaust(e: unknown, think: boolean): boolean {
   )
 }
 
-async function findExistingBotComment(
+// Returns the IDs of ALL existing bot comments on the PR, across all pages.
+// Using filter (not find) so that multiple stale comments from failed prior
+// runs are all collected and can be deleted before posting a fresh one.
+async function findAllBotCommentIds(
   octokit: ReturnType<typeof github.getOctokit>,
   owner: string,
   repo: string,
   prNumber: number
-): Promise<number | undefined> {
-  core.info(`[step 5/5] searching for existing bot comment on PR #${prNumber}...`)
+): Promise<number[]> {
+  core.info(`[step 5/5] searching for existing bot comments on PR #${prNumber}...`)
+  const ids: number[] = []
   let page = 1
   while (true) {
     core.info(`[step 5/5] listComments page=${page}`)
@@ -349,17 +353,15 @@ async function findExistingBotComment(
       page,
     })
     core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`)
-    const bot = comments.find(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
-    if (bot) {
-      core.info(`[step 5/5] found existing bot comment id=${bot.id}`)
-      return bot.id
-    }
-    if (comments.length < 100) {
-      core.info(`[step 5/5] no existing bot comment found`)
-      return undefined
-    }
+    const botIds = comments
+      .filter(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
+      .map(c => c.id)
+    ids.push(...botIds)
+    if (comments.length < 100) break
     page++
   }
+  core.info(`[step 5/5] found ${ids.length} existing bot comment(s): ${ids.join(', ') || '(none)'}`)
+  return ids
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +407,7 @@ async function run(): Promise<void> {
     const promptExtraRaw = core.getInput('prompt_extra')
     if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     const promptExtra    = promptExtraRaw.slice(0, 300)
-    // When true, the previous bot comment is deleted before posting a new one
+    // When true, ALL previous bot comments are deleted before posting a new one
     // (single living comment per PR). When false (default), all review comments
     // are preserved, giving a full history of reviews on the PR thread.
     const rawReplaceExistingComment = core.getInput('replace_existing_comment')
@@ -534,20 +536,21 @@ async function run(): Promise<void> {
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
     if (replaceExistingComment) {
-      // Locate and delete the previous bot comment before posting a fresh one.
-      // This keeps a single living review comment on the PR (less noisy).
-      const existingCommentId = await withRetry('find-comment', () =>
-        findExistingBotComment(octokit, owner, repoName, prNumber)
+      // Collect ALL existing bot comments and delete each one before posting a
+      // fresh review. Using findAll (not find) so stale duplicates from prior
+      // failed runs don't accumulate alongside the new comment.
+      const existingIds = await withRetry('find-comments', () =>
+        findAllBotCommentIds(octokit, owner, repoName, prNumber)
       )
-
-      if (existingCommentId) {
-        core.info(`[step 5/5] deleting previous bot comment id=${existingCommentId}...`)
-        await withRetry('delete-comment', () =>
-          octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId })
+      for (const id of existingIds) {
+        core.info(`[step 5/5] deleting bot comment id=${id}...`)
+        await withRetry(`delete-comment-${id}`, () =>
+          octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id })
         )
-        core.info(`[step 5/5] previous bot comment deleted`)
-      } else {
-        core.info(`[step 5/5] no previous bot comment to delete`)
+        core.info(`[step 5/5] deleted bot comment id=${id}`)
+      }
+      if (existingIds.length === 0) {
+        core.info(`[step 5/5] no previous bot comments to delete`)
       }
     } else {
       core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`)
