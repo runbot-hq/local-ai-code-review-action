@@ -30326,6 +30326,11 @@ async function run() {
         if (promptExtraRaw.length > 300)
             core.warning('[init] prompt_extra was truncated to 300 chars');
         const promptExtra = promptExtraRaw.slice(0, 300);
+        // When true, the previous bot comment is deleted before posting a new one
+        // (single living comment per PR). When false (default), all review comments
+        // are preserved, giving a full history of reviews on the PR thread.
+        const replaceExistingComment = core.getInput('replace_existing_comment') === 'true';
+        core.info(`[init] replace_existing_comment: ${replaceExistingComment}`);
         // maximum_response_tokens: if caller explicitly sets it, honour it;
         // otherwise the tier selection below sets the appropriate default.
         const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
@@ -30429,17 +30434,25 @@ async function run() {
         // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
+        core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
         networkDiag('pre-post');
         const fullReview = review + BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
-        const existingCommentId = await withRetry('find-comment', () => findExistingBotComment(octokit, owner, repoName, prNumber));
-        if (existingCommentId) {
-            core.info(`[step 5/5] deleting previous bot comment id=${existingCommentId}...`);
-            await withRetry('delete-comment', () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId }));
-            core.info(`[step 5/5] previous bot comment deleted`);
+        if (replaceExistingComment) {
+            // Locate and delete the previous bot comment before posting a fresh one.
+            // This keeps a single living review comment on the PR (less noisy).
+            const existingCommentId = await withRetry('find-comment', () => findExistingBotComment(octokit, owner, repoName, prNumber));
+            if (existingCommentId) {
+                core.info(`[step 5/5] deleting previous bot comment id=${existingCommentId}...`);
+                await withRetry('delete-comment', () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: existingCommentId }));
+                core.info(`[step 5/5] previous bot comment deleted`);
+            }
+            else {
+                core.info(`[step 5/5] no previous bot comment to delete`);
+            }
         }
         else {
-            core.info(`[step 5/5] no previous bot comment to delete`);
+            core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`);
         }
         core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`);
         const { data: comment } = await withRetry('create-comment', () => octokit.rest.issues.createComment({
