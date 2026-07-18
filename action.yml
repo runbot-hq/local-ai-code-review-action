@@ -20,9 +20,8 @@ inputs:
     required: false
     default: '0.2'
   maximum_response_tokens:
-    description: 'Max tokens in model response'
+    description: 'Max tokens in model response. When not set, the action automatically selects 4096 for shallow reviews (< 150 reviewable lines) or 8192 for deep reviews. Set explicitly to override.'
     required: false
-    default: '2048'
   timeout_seconds:
     description: 'URLRequest timeout passed to local-ai-cli (seconds). Increase for large/slow models. spawnSync hard-kill is timeout_seconds + 60s.'
     required: false

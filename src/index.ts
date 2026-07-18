@@ -408,10 +408,14 @@ async function run(): Promise<void> {
     // When true, the previous bot comment is deleted before posting a new one
     // (single living comment per PR). When false (default), all review comments
     // are preserved, giving a full history of reviews on the PR thread.
-    const replaceExistingComment = core.getInput('replace_existing_comment') === 'true'
+    const rawReplaceExistingComment = core.getInput('replace_existing_comment')
+    if (rawReplaceExistingComment && rawReplaceExistingComment !== 'true' && rawReplaceExistingComment !== 'false') {
+      core.warning(`[init] replace_existing_comment: unrecognised value "${rawReplaceExistingComment}" — treating as false. Use 'true' or 'false'.`)
+    }
+    const replaceExistingComment = rawReplaceExistingComment === 'true'
     core.info(`[init] replace_existing_comment: ${replaceExistingComment}`)
     // maximum_response_tokens: if caller explicitly sets it, honour it;
-    // otherwise the tier selection below sets the appropriate default.
+    // otherwise the tier selection below sets the appropriate default (4096 shallow / 8192 deep).
     const maximumResponseTokensOverride = core.getInput('maximum_response_tokens')
       ? parseInt(core.getInput('maximum_response_tokens'))
       : undefined
