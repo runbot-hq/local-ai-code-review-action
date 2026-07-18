@@ -31,6 +31,10 @@ inputs:
     description: 'Extra instructions appended to the review prompt (max 300 chars)'
     required: false
     default: ''
+  replace_existing_comment:
+    description: 'When true, delete the previous bot comment before posting a new one (single living comment per PR). When false (default), each review run appends a new comment, preserving the full review history.'
+    required: false
+    default: 'false'
   debug:
     description: 'Enable debug logging'
     required: false
