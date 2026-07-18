@@ -30242,6 +30242,8 @@ function localAiCli(bin, prompt, options) {
     const result = (0, child_process_1.spawnSync)(bin, args, {
         encoding: 'utf8',
         timeout: spawnTimeoutMs,
+        // 10 MB buffer — model output for large PRs can be verbose. Raises an
+        // error rather than silently truncating if the limit is ever exceeded.
         maxBuffer: 10 * 1024 * 1024,
     });
     const callMs = Date.now() - callStart;
@@ -30310,6 +30312,8 @@ async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
             .filter(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
             .map(c => c.id);
         ids.push(...botIds);
+        // Standard pagination sentinel: fewer than per_page results means last page.
+        // If comments.length === 100, there may be more — loop continues.
         if (comments.length < 100)
             break;
         page++;
@@ -30396,6 +30400,12 @@ async function run() {
         core.info(`[step 1/5] Binary ready: ${bin}`);
         const octokit = github.getOctokit(token);
         // 5. Fetch PR files
+        // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
+        // paginated. The GitHub API hard-limit for this endpoint is also 3000 files,
+        // but in practice PRs with >100 changed files produce diffs that far exceed
+        // the MAX_PATCH_CHARS budget anyway. The files.length === 100 warning below
+        // surfaces the truncation in CI logs. Paginating here would add complexity
+        // without meaningfully improving review quality for such large PRs.
         core.info('[step 2/5] Fetching PR changed files...');
         const { data: files } = await octokit.rest.pulls.listFiles({
             owner,
@@ -30418,6 +30428,8 @@ async function run() {
         // Tier drives both think-mode and the maximum_response_tokens default.
         // shallow: < 150 reviewable lines — think=false, max_tokens=4096
         // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
+        // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
+        // small enough that extended thinking adds latency without improving output.
         const { tier, reviewableLines } = selectTier(files);
         const think = tier === 'deep';
         const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
@@ -30462,6 +30474,8 @@ async function run() {
             `PR #${prNumber}: "${prTitle}"`,
             '',
             diffBlock,
+            // prompt_extra is capped at 300 chars to prevent prompt injection via
+            // workflow inputs and to keep the prompt size predictable across tiers.
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
         core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think})...`);
