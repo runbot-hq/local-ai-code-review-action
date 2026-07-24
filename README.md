@@ -21,6 +21,12 @@ on:
 jobs:
   review:
     runs-on: [self-hosted, macos-m1]
+    # Fork guard: prevents external fork PRs from running arbitrary code on
+    # your self-hosted runner. Without this, any GitHub user can open a fork PR
+    # and execute code on your machine.
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
       contents: read
