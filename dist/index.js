@@ -30392,26 +30392,30 @@ async function run() {
         // === skip_review_label ===
         // Checked against PR title, PR body, and head commit message — all lowercased
         // for a case-insensitive match. The check fires before binary download and
-        // diff fetch, so skipped runs consume minimal runner time (one retried API
-        // call to fetch the commit message is the only cost).
+        // diff fetch; the only cost on a skipped run is the repos.getCommit API call
+        // below (needed to read the head commit message — see comment there).
+        //
+        // Input is trimmed before the empty-string fallback so that a whitespace-only
+        // value (e.g. skip_review_label: ' ') does not silently match every PR body.
+        // A warning is emitted when the raw value is non-empty but trims to empty,
+        // so callers get visibility rather than a silent fallback.
+        //
+        // Default '[skip ai review]' works with zero workflow changes for existing callers.
+        const rawSkipLabel = core.getInput('skip_review_label').trim();
+        if (!rawSkipLabel && core.getInput('skip_review_label').length > 0) {
+            core.warning('[init] skip_review_label is whitespace-only — falling back to default "[skip ai review]"');
+        }
+        const skipLabel = (rawSkipLabel || '[skip ai review]').toLowerCase();
+        core.info(`[init] skip_review_label: "${skipLabel}"`);
+        const prBody = (pr.body ?? '').toLowerCase();
+        // octokit is constructed early and intentionally in scope for the full run()
+        // function — it is reused both here (skip check) and in steps 2/5 and 5/5
+        // below. This is not an accident; do not re-scope it closer to step 4.
         //
         // IMPORTANT: context.payload.head_commit is populated on push events only,
         // NOT on pull_request events. On a PR trigger it is always undefined.
         // The commit message must be fetched via the API using pr.head.sha —
         // the only reliable source for the head commit message on a pull_request event.
-        //
-        // octokit is constructed here, before ensureBinary, so the skip check can
-        // make the getCommit call. This widens octokit's scope to the full run()
-        // function — intentional, and consistent with how it is reused in steps
-        // 5/5 below. Do not move it back down: the skip gate must precede the binary
-        // download to remain meaningful as an early-exit.
-        //
-        // Default '[skip ai review]' works with zero workflow changes for existing callers.
-        const skipLabel = (core.getInput('skip_review_label') || '[skip ai review]').toLowerCase();
-        const prBody = (pr.body ?? '').toLowerCase();
-        // octokit is constructed early and intentionally in scope for the full run()
-        // function — it is reused both here (skip check) and in steps 2/5 and 5/5
-        // below. This is not an accident; do not re-scope it closer to step 4.
         const octokit = github.getOctokit(token);
         core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`);
         const { data: headCommit } = await withRetry('fetch-head-commit', () => octokit.rest.repos.getCommit({
