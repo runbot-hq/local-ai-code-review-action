@@ -79,7 +79,7 @@ chore: update lockfile [skip ai review]
 **Skip via PR body** — same effect, keeps the title clean:
 > Add `[skip ai review]` anywhere in the PR description.
 
-The flag is case-insensitive. The check fires before any binary download or model call, so skipped runs consume minimal runner time.
+The flag is case-insensitive. The check fires before any binary download or model call; the only cost on a skipped run is one lightweight `repos.getCommit` API call to read the head commit message.
 
 To use a custom flag instead of the default, set the `skip_review_label` input in your workflow:
 
@@ -110,6 +110,10 @@ To use a custom flag instead of the default, set the `skip_review_label` input i
 Every review comment ends with:
 
 > 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)
+
+## Contributing
+
+`dist/index.js` is the compiled, bundled entry point the action actually executes — it is not hand-edited. The source lives in `src/`. On every push to `main`, the [`build.yml`](.github/workflows/build.yml) workflow runs `npm run build` (via [ncc](https://github.com/vercel/ncc)) and commits the updated `dist/index.js` automatically. You do not need to build locally before merging a PR.
 
 ## Related
 
