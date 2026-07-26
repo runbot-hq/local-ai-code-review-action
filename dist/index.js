@@ -30418,12 +30418,22 @@ async function run() {
         // octokit is constructed early and intentionally in scope for the full run()
         // function — it is reused both here (skip check) and in steps 2/5 and 5/5
         // below. This is not an accident; do not re-scope it closer to step 4.
-        //
+        const octokit = github.getOctokit(token);
+        // Short-circuit on title/body first — both are already in
+        // context.payload.pull_request at zero cost. Only pay the
+        // repos.getCommit round-trip if neither matched, since the commit
+        // message is the only source that requires an API call.
+        const titleBodyMatch = prTitle.toLowerCase().includes(skipLabel) ||
+            prBody.includes(skipLabel);
+        if (titleBodyMatch) {
+            core.info(`[init] Skip label "${skipLabel}" detected in title/body — skipping AI review.`);
+            return;
+        }
+        // Title and body didn't match — fetch head commit message as the final check.
         // IMPORTANT: context.payload.head_commit is populated on push events only,
         // NOT on pull_request events. On a PR trigger it is always undefined.
         // The commit message must be fetched via the API using pr.head.sha —
         // the only reliable source for the head commit message on a pull_request event.
-        const octokit = github.getOctokit(token);
         core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`);
         const { data: headCommit } = await withRetry('fetch-head-commit', () => octokit.rest.repos.getCommit({
             owner,
@@ -30432,10 +30442,8 @@ async function run() {
         }));
         const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase();
         core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`);
-        if (prTitle.toLowerCase().includes(skipLabel) ||
-            prBody.includes(skipLabel) ||
-            headCommitMessage.includes(skipLabel)) {
-            core.info(`[init] Skip label "${skipLabel}" detected — skipping AI review.`);
+        if (headCommitMessage.includes(skipLabel)) {
+            core.info(`[init] Skip label "${skipLabel}" detected in commit message — skipping AI review.`);
             return;
         }
         core.info(`[init] skip_review_label: not found — proceeding with review`);
