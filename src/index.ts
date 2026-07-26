@@ -498,7 +498,6 @@ async function run(): Promise<void> {
     // calls.
     const skipLabel = (skipLabelTrimmed || '[skip ai review]').toLowerCase()
     core.info(`[init] skip_review_label: "${skipLabel}"`)
-    const prBody = ((pr.body as string) ?? '').toLowerCase()
 
     // octokit is constructed early and intentionally in scope for the full run()
     // function — it is reused both here (skip check) and in steps 2/5 and 5/5
@@ -509,9 +508,12 @@ async function run(): Promise<void> {
     // context.payload.pull_request at zero cost. Only pay the
     // repos.getCommit round-trip if neither matched, since the commit
     // message is the only source that requires an API call.
+    // prBody is declared here, adjacent to its only use, with .toLowerCase()
+    // deferred to the comparison site — consistent with how prTitle is handled.
+    const prBody = (pr.body as string) ?? ''
     const titleBodyMatch =
       prTitle.toLowerCase().includes(skipLabel) ||
-      prBody.includes(skipLabel)
+      prBody.toLowerCase().includes(skipLabel)
 
     if (titleBodyMatch) {
       core.info(`[init] Skip label "${skipLabel}" detected in title/body — skipping AI review.`)
