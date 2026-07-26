@@ -53,6 +53,7 @@ jobs:
 | `timeout_seconds` | `600` | URLRequest timeout in seconds. Increase for large or slow models. |
 | `prompt_extra` | *(none)* | Extra instructions appended to the review prompt (max 300 chars) |
 | `replace_existing_comment` | `false` | When `false` (default), each review run appends a new comment — full review history is preserved. When `true`, the previous bot comment is deleted before posting a new one (single living comment per PR). |
+| `skip_review_label` | `[skip ai review]` | If this string is found in the PR title, PR body, or head commit message, the review is skipped entirely. See [Skipping a review](#skipping-a-review). |
 | `debug` | `false` | Enable debug logging |
 
 ## Outputs
@@ -60,6 +61,35 @@ jobs:
 | Output | Description |
 |---|---|
 | `review_body` | The full review comment posted to the PR |
+
+## Skipping a review
+
+Add `[skip ai review]` anywhere in your **PR title**, **PR body**, or **commit message** to skip the review for that trigger.
+
+**Skip via commit message** — useful for fixup pushes that don't need a review:
+```
+git commit -m "fix typo [skip ai review]"
+```
+
+**Skip via PR title** — skips every subsequent push to the PR:
+```
+chore: update lockfile [skip ai review]
+```
+
+**Skip via PR body** — same effect, keeps the title clean:
+> Add `[skip ai review]` anywhere in the PR description.
+
+The flag is case-insensitive. The check fires before any binary download or model call, so skipped runs consume minimal runner time.
+
+To use a custom flag instead of the default, set the `skip_review_label` input in your workflow:
+
+```yaml
+- uses: runbot-hq/local-ai-code-review-action@v1
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  with:
+    skip_review_label: '[no review]'
+```
 
 ## Requirements
 
