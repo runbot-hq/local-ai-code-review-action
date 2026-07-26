@@ -472,12 +472,33 @@ async function run(): Promise<void> {
 
     // === skip_review_label ===
     // Checked against PR title, PR body, and head commit message — all lowercased
-    // for a case-insensitive match. The check fires before any binary download or
-    // diff fetch, so skipped runs consume no runner time beyond this point.
+    // for a case-insensitive match. The check fires before binary download and
+    // diff fetch, so skipped runs consume minimal runner time (one lightweight
+    // API call to fetch the commit message is the only cost).
+    //
+    // IMPORTANT: context.payload.head_commit is populated on push events only,
+    // NOT on pull_request events. On a PR trigger it is always undefined.
+    // The commit message must be fetched via the API using pr.head.sha —
+    // the only reliable source for the head commit message on a pull_request event.
+    // octokit is constructed here (before ensureBinary) specifically to enable
+    // this check without restructuring the skip gate.
+    //
     // Default '[skip ai review]' works with zero workflow changes for existing callers.
     const skipLabel = (core.getInput('skip_review_label') || '[skip ai review]').toLowerCase()
     const prBody = ((pr.body as string) ?? '').toLowerCase()
-    const headCommitMessage = ((context.payload.head_commit?.message as string) ?? '').toLowerCase()
+
+    // Construct octokit early — needed to fetch the head commit message for the
+    // skip check. This is a lightweight client construction, not a network call.
+    const octokit = github.getOctokit(token)
+
+    core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`)
+    const { data: headCommit } = await octokit.rest.repos.getCommit({
+      owner,
+      repo: repoName,
+      ref: pr.head.sha as string,
+    })
+    const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase()
+    core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`)
 
     if (
       prTitle.toLowerCase().includes(skipLabel) ||
@@ -498,8 +519,6 @@ async function run(): Promise<void> {
     core.info('[step 1/5] Ensuring local-ai-cli binary...')
     const bin = await ensureBinary(token)
     core.info(`[step 1/5] Binary ready: ${bin}`)
-
-    const octokit = github.getOctokit(token)
 
     // 5. Fetch PR files
     // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
