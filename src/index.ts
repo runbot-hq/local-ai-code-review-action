@@ -476,17 +476,27 @@ async function run(): Promise<void> {
     // diff fetch; the only cost on a skipped run is the repos.getCommit API call
     // below (needed to read the head commit message — see comment there).
     //
-    // Input is trimmed before the empty-string fallback so that a whitespace-only
-    // value (e.g. skip_review_label: ' ') does not silently match every PR body.
-    // A warning is emitted when the raw value is non-empty but trims to empty,
-    // so callers get visibility rather than a silent fallback.
-    //
-    // Default '[skip ai review]' works with zero workflow changes for existing callers.
-    const rawSkipLabel = core.getInput('skip_review_label').trim()
-    if (!rawSkipLabel && core.getInput('skip_review_label').length > 0) {
+    // Capture the raw input once — used both for the whitespace-only guard
+    // (.length > 0) and as the base for trimming. Calling core.getInput() twice
+    // is redundant since the value cannot change within a synchronous block.
+    const rawSkipLabel = core.getInput('skip_review_label')
+
+    // Trim separately so the warning guard can distinguish between "not set"
+    // (empty string, length === 0) and "set but whitespace-only" (length > 0,
+    // trims to ''). A whitespace-only value must not silently match every PR.
+    const skipLabelTrimmed = rawSkipLabel.trim()
+
+    // Warn only when the caller explicitly set the input to whitespace — a
+    // silent fallback here would be confusing since behaviour changes without
+    // notice.
+    if (!skipLabelTrimmed && rawSkipLabel.length > 0) {
       core.warning('[init] skip_review_label is whitespace-only — falling back to default "[skip ai review]"')
     }
-    const skipLabel = (rawSkipLabel || '[skip ai review]').toLowerCase()
+
+    // Lowercase once at assignment so every comparison below (title, body,
+    // commit message) can use a plain .includes() without repeated .toLowerCase()
+    // calls.
+    const skipLabel = (skipLabelTrimmed || '[skip ai review]').toLowerCase()
     core.info(`[init] skip_review_label: "${skipLabel}"`)
     const prBody = ((pr.body as string) ?? '').toLowerCase()
 
