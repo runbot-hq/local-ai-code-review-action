@@ -30389,6 +30389,21 @@ async function run() {
         // Radix 10 is explicit to prevent misparse of '0'-prefixed strings as octal.
         const rawMaxTokens = core.getInput('maximum_response_tokens');
         const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined;
+        // === skip_review_label ===
+        // Checked against PR title, PR body, and head commit message — all lowercased
+        // for a case-insensitive match. The check fires before any binary download or
+        // diff fetch, so skipped runs consume no runner time beyond this point.
+        // Default '[skip ai review]' works with zero workflow changes for existing callers.
+        const skipLabel = (core.getInput('skip_review_label') || '[skip ai review]').toLowerCase();
+        const prBody = (pr.body ?? '').toLowerCase();
+        const headCommitMessage = (context.payload.head_commit?.message ?? '').toLowerCase();
+        if (prTitle.toLowerCase().includes(skipLabel) ||
+            prBody.includes(skipLabel) ||
+            headCommitMessage.includes(skipLabel)) {
+            core.info(`[init] Skip label "${skipLabel}" detected — skipping AI review.`);
+            return;
+        }
+        core.info(`[init] skip_review_label: not found — proceeding with review`);
         // 4. Ensure binary (authenticated)
         // dist/index.js is a committed build artifact (produced by `npm run build`
         // which runs ncc). It is rebuilt automatically by .github/workflows/build.yml
