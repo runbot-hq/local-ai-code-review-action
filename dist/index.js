@@ -30389,6 +30389,66 @@ async function run() {
         // Radix 10 is explicit to prevent misparse of '0'-prefixed strings as octal.
         const rawMaxTokens = core.getInput('maximum_response_tokens');
         const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined;
+        // === skip_review_label ===
+        // Checked against PR title, PR body, and head commit message — all lowercased
+        // for a case-insensitive match. The check fires before binary download and
+        // diff fetch; the only cost on a skipped run is the repos.getCommit API call
+        // below (needed to read the head commit message — see comment there).
+        //
+        // Capture the raw input once — used both for the whitespace-only guard
+        // (.length > 0) and as the base for trimming. Calling core.getInput() twice
+        // is redundant since the value cannot change within a synchronous block.
+        const rawSkipLabel = core.getInput('skip_review_label');
+        // Trim separately so the warning guard can distinguish between "not set"
+        // (empty string, length === 0) and "set but whitespace-only" (length > 0,
+        // trims to ''). A whitespace-only value must not silently match every PR.
+        const skipLabelTrimmed = rawSkipLabel.trim();
+        // Warn only when the caller explicitly set the input to whitespace — a
+        // silent fallback here would be confusing since behaviour changes without
+        // notice.
+        if (!skipLabelTrimmed && rawSkipLabel.length > 0) {
+            core.warning('[init] skip_review_label is whitespace-only — falling back to default "[skip ai review]"');
+        }
+        // Lowercase once at assignment so every comparison below (title, body,
+        // commit message) can use a plain .includes() without repeated .toLowerCase()
+        // calls.
+        const skipLabel = (skipLabelTrimmed || '[skip ai review]').toLowerCase();
+        core.info(`[init] skip_review_label: "${skipLabel}"`);
+        // octokit is constructed early and intentionally in scope for the full run()
+        // function — it is reused both here (skip check) and in steps 2/5 and 5/5
+        // below. This is not an accident; do not re-scope it closer to step 4.
+        const octokit = github.getOctokit(token);
+        // Short-circuit on title/body first — both are already in
+        // context.payload.pull_request at zero cost. Only pay the
+        // repos.getCommit round-trip if neither matched, since the commit
+        // message is the only source that requires an API call.
+        // prBody is declared here, adjacent to its only use, with .toLowerCase()
+        // deferred to the comparison site — consistent with how prTitle is handled.
+        const prBody = pr.body ?? '';
+        const titleBodyMatch = prTitle.toLowerCase().includes(skipLabel) ||
+            prBody.toLowerCase().includes(skipLabel);
+        if (titleBodyMatch) {
+            core.info(`[init] Skip label "${skipLabel}" detected in title/body — skipping AI review.`);
+            return;
+        }
+        // Title and body didn't match — fetch head commit message as the final check.
+        // IMPORTANT: context.payload.head_commit is populated on push events only,
+        // NOT on pull_request events. On a PR trigger it is always undefined.
+        // The commit message must be fetched via the API using pr.head.sha —
+        // the only reliable source for the head commit message on a pull_request event.
+        core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`);
+        const { data: headCommit } = await withRetry('fetch-head-commit', () => octokit.rest.repos.getCommit({
+            owner,
+            repo: repoName,
+            ref: pr.head.sha,
+        }));
+        const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase();
+        core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`);
+        if (headCommitMessage.includes(skipLabel)) {
+            core.info(`[init] Skip label "${skipLabel}" detected in commit message — skipping AI review.`);
+            return;
+        }
+        core.info(`[init] skip_review_label: not found — proceeding with review`);
         // 4. Ensure binary (authenticated)
         // dist/index.js is a committed build artifact (produced by `npm run build`
         // which runs ncc). It is rebuilt automatically by .github/workflows/build.yml
@@ -30398,7 +30458,6 @@ async function run() {
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await ensureBinary(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
-        const octokit = github.getOctokit(token);
         // 5. Fetch PR files
         // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
         // paginated. The GitHub API hard-limit for this endpoint is also 3000 files,
