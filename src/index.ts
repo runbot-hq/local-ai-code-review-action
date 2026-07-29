@@ -661,6 +661,10 @@ async function run(): Promise<void> {
     if (!review) throw new Error('local-ai-cli returned empty output')
     core.info(`[step 4/5] Model response: ${review.length} chars`)
 
+    await core.group('AI Review Output', async () => {
+      core.info(review)
+    })
+
     // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
     core.info('[step 5/5] Posting PR comment...')
     core.info(`[step 5/5] review body length: ${review.length} chars`)
