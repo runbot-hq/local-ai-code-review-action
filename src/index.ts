@@ -661,7 +661,7 @@ async function run(): Promise<void> {
     if (!review) throw new Error('local-ai-cli returned empty output')
     core.info(`[step 4/5] Model response: ${review.length} chars`)
 
-    await core.group('[step 4/5] AI Review Output', async () => {
+    await core.group('AI Review Output', async () => {
       core.info(review)
     })
 
