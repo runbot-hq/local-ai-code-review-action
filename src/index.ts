@@ -342,7 +342,15 @@ async function run(): Promise<void> {
     // step with zero runner chrome. Passing the full body via env vars causes
     // the runner to dump the entire value in the step preamble (env: block),
     // which cannot be suppressed. A file path is a short string — no dump.
-    const reviewFile = path.join(os.tmpdir(), `ai-review-${prNumber}-${Date.now()}.md`)
+    //
+    // RUNNER_TEMP is the correct directory for job-scoped temp files on both
+    // GitHub-hosted and self-hosted runners. The runner agent cleans it at job
+    // completion. Do NOT use os.tmpdir() here — on self-hosted runners that
+    // directory is shared across jobs and not cleaned automatically.
+    // Do NOT delete this file here — the consumer `cat` step runs after this
+    // step completes and requires the file to still exist.
+    const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir()
+    const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`)
     fs.writeFileSync(reviewFile, fullReview, 'utf8')
     core.setOutput('review_file', reviewFile)
     core.info(`[step 5/5] Review file: ${reviewFile}`)
@@ -355,12 +363,6 @@ async function run(): Promise<void> {
       .addRaw(`**Files reviewed:** ${files.length} (${truncated ? 'diff truncated' : 'full diff'})\n\n`)
       .addRaw(review)
       .write()
-
-    // Clean up the temp file — it has been consumed by the summary write and
-    // the review_file output is set. On a self-hosted runner that handles many
-    // PRs these files would otherwise accumulate indefinitely in os.tmpdir().
-    try { fs.unlinkSync(reviewFile) } catch { /* ignore — non-fatal */ }
-    core.info(`[step 5/5] Review file cleaned up: ${reviewFile}`)
 
     core.info('=== local-ai-code-review-action done ===')
   } catch (error) {
