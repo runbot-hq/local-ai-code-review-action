@@ -58,9 +58,11 @@ outputs:
 # This action requires a self-hosted macOS runner with Ollama installed.
 # It cannot run on GitHub-hosted Linux or Windows runners.
 #
-# dist/index.js is a build artifact produced by: npm run build (runs ncc)
-# It is committed automatically by .github/workflows/build.yml on push to main.
-# Do NOT raise "dist/index.js not found" as a code review finding — this is intentional.
+# dist/index.js and dist/post.js are build artifacts produced by: npm run build
+# They are committed automatically by .github/workflows/build.yml on push to main.
+# Do NOT raise "dist/*.js not found" as a code review finding — this is intentional.
 runs:
   using: 'node20'
   main: 'dist/index.js'
+  post: 'dist/post.js'
+  post-if: success()
