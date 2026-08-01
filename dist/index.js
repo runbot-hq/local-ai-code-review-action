@@ -30509,7 +30509,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
+const fs = __importStar(__nccwpck_require__(9896));
 const os = __importStar(__nccwpck_require__(857));
+const path = __importStar(__nccwpck_require__(6928));
 const constants_1 = __nccwpck_require__(7242);
 const tier_1 = __nccwpck_require__(4851);
 const binary_1 = __nccwpck_require__(9482);
@@ -30762,7 +30764,7 @@ async function run() {
         }
         if (!review)
             throw new Error('local-ai-cli returned empty output');
-        core.info(`[step 4/5] Review complete (${review.length} chars) — rendered in job summary below`);
+        core.info(`[step 4/5] Review complete (${review.length} chars)`);
         // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
@@ -30806,6 +30808,14 @@ async function run() {
         }));
         core.info(`[step 5/5] Review posted: ${comment.html_url}`);
         core.setOutput('review_body', fullReview);
+        // Write review to a temp file so the caller can `cat` it in a dedicated
+        // step with zero runner chrome. Passing the full body via env vars causes
+        // the runner to dump the entire value in the step preamble (env: block),
+        // which cannot be suppressed. A file path is a short string — no dump.
+        const reviewFile = path.join(os.tmpdir(), `ai-review-${prNumber}-${Date.now()}.md`);
+        fs.writeFileSync(reviewFile, fullReview, 'utf8');
+        core.setOutput('review_file', reviewFile);
+        core.info(`[step 5/5] Review file: ${reviewFile}`);
         await core.summary
             .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
             .addRaw(`**Model:** ${model}\n`)
