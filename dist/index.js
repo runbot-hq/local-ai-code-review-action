@@ -30518,6 +30518,19 @@ const github_1 = __nccwpck_require__(9248);
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+// Prevents ##[...] and ::...:: annotation sequences in arbitrary strings
+// (e.g. error messages, model output fragments) from being re-interpreted
+// as live GitHub Actions runner commands when passed to core.setFailed(),
+// core.warning(), or core.error().
+// The :: replacement is scoped to line-starts only — runner commands require
+// :: at the beginning of a line. A global replace would mangle IPv6 addresses,
+// C++/Rust/Ruby scope-resolution operators, and other legitimate :: usage.
+// Safe to apply unconditionally — normal log text is unaffected.
+function sanitizeForRunner(s) {
+    return s
+        .replace(/##\[/g, '#[')
+        .replace(/(^|[\r\n])::/gm, '$1: :');
+}
 async function run() {
     try {
         core.info('=== local-ai-code-review-action starting ===');
@@ -30804,7 +30817,7 @@ async function run() {
         core.info('=== local-ai-code-review-action done ===');
     }
     catch (error) {
-        core.setFailed(error instanceof Error ? error.message : String(error));
+        core.setFailed(sanitizeForRunner(error instanceof Error ? error.message : String(error)));
     }
 }
 run();
