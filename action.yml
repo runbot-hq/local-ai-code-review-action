@@ -47,7 +47,7 @@ outputs:
   review_body:
     description: 'The full review comment posted to the PR. Absent when the review is skipped (skip label matched, no changed files, or no patchable diff content).'
   review_file:
-    description: 'Path to a temp file in RUNNER_TEMP containing the full review body — use with `cat` in a subsequent step for clean output with no runner chrome. Absent when the review is skipped or if the file write fails (non-fatal). The consumer step should guard with: if: steps.<id>.outputs.review_file != ""'
+    description: 'Path to a temp file in RUNNER_TEMP containing the full review body. Absent when the review is skipped or if the file write fails (non-fatal).'
 
 # local-ai-cli-bin is NOT committed to this repo.
 # It is downloaded at runtime by ensureBinary() in src/index.ts from the
@@ -66,3 +66,5 @@ outputs:
 runs:
   using: 'node20'
   main: 'dist/index.js'
+  post: 'dist/post.js'
+  post-if: success()
