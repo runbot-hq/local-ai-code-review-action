@@ -18,7 +18,15 @@ async function post(): Promise<void> {
   core.info('[post] AI Review Output')
   // execFileSync with stdio: inherit streams directly to the runner log.
   // No env var, no shell expansion — just the file content, nothing else.
-  execFileSync('cat', [reviewFile], { stdio: 'inherit' })
+  // Wrapped in try/catch: a cat failure (missing file, bad mount, cat not on
+  // PATH) must not throw and fail the post step — the review is already posted
+  // to the PR at this point. Mirror the best-effort contract of the file write
+  // in index.ts.
+  try {
+    execFileSync('cat', [reviewFile], { stdio: 'inherit' })
+  } catch (e) {
+    core.warning(`[post] Failed to cat review file: ${String(e)}`)
+  }
 }
 
 post()
