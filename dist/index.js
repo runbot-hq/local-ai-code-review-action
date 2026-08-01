@@ -30817,13 +30817,23 @@ async function run() {
         // GitHub-hosted and self-hosted runners. The runner agent cleans it at job
         // completion. Do NOT use os.tmpdir() here — on self-hosted runners that
         // directory is shared across jobs and not cleaned automatically.
-        // Do NOT delete this file here — the consumer `cat` step runs after this
-        // step completes and requires the file to still exist.
-        const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
-        const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
-        fs.writeFileSync(reviewFile, fullReview, 'utf8');
-        core.setOutput('review_file', reviewFile);
-        core.info(`[step 5/5] Review file: ${reviewFile}`);
+        // Do NOT delete this file — the consumer `cat` step runs after this step
+        // completes and requires the file to still exist.
+        //
+        // The write is best-effort: the PR comment is already posted at this point.
+        // A file I/O failure (e.g. unwritable RUNNER_TEMP on a misconfigured runner)
+        // must not fail the job. The consumer step's if: ... != '' guard handles
+        // the absent-output case cleanly.
+        try {
+            const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
+            const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
+            fs.writeFileSync(reviewFile, fullReview, 'utf8');
+            core.setOutput('review_file', reviewFile);
+            core.info(`[step 5/5] Review file: ${reviewFile}`);
+        }
+        catch (e) {
+            core.warning(`[step 5/5] Could not write review file — review_file output will be absent: ${String(e)}`);
+        }
         await core.summary
             .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
             .addRaw(`**Model:** ${model}\n`)
