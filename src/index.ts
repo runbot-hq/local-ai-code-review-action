@@ -1,6 +1,8 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+import * as fs from 'fs'
 import * as os from 'os'
+import * as path from 'path'
 import { BOT_SIGNATURE } from './constants'
 import { selectTier } from './tier'
 import { ensureBinary } from './binary'
@@ -280,7 +282,7 @@ async function run(): Promise<void> {
     }
 
     if (!review) throw new Error('local-ai-cli returned empty output')
-    core.info(`[step 4/5] Review complete (${review.length} chars) — rendered in job summary below`)
+    core.info(`[step 4/5] Review complete (${review.length} chars)`)
 
     // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
     core.info('[step 5/5] Posting PR comment...')
@@ -335,6 +337,32 @@ async function run(): Promise<void> {
 
     core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
+
+    // Write review to a temp file so the caller can `cat` it in a dedicated
+    // step with zero runner chrome. Passing the full body via env vars causes
+    // the runner to dump the entire value in the step preamble (env: block),
+    // which cannot be suppressed. A file path is a short string — no dump.
+    //
+    // RUNNER_TEMP is the correct directory for job-scoped temp files on both
+    // GitHub-hosted and self-hosted runners. The runner agent cleans it at job
+    // completion. Do NOT use os.tmpdir() here — on self-hosted runners that
+    // directory is shared across jobs and not cleaned automatically.
+    // Do NOT delete this file — the consumer `cat` step runs after this step
+    // completes and requires the file to still exist.
+    //
+    // The write is best-effort: the PR comment is already posted at this point.
+    // A file I/O failure (e.g. unwritable RUNNER_TEMP on a misconfigured runner)
+    // must not fail the job. The consumer step's if: ... != '' guard handles
+    // the absent-output case cleanly.
+    try {
+      const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir()
+      const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`)
+      fs.writeFileSync(reviewFile, fullReview, 'utf8')
+      core.setOutput('review_file', reviewFile)
+      core.info(`[step 5/5] Review file: ${reviewFile}`)
+    } catch (e) {
+      core.warning(`[step 5/5] Could not write review file — review_file output will be absent: ${String(e)}`)
+    }
 
     await core.summary
       .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
