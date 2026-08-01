@@ -30824,6 +30824,14 @@ async function run() {
             .addRaw(`**Files reviewed:** ${files.length} (${truncated ? 'diff truncated' : 'full diff'})\n\n`)
             .addRaw(review)
             .write();
+        // Clean up the temp file — it has been consumed by the summary write and
+        // the review_file output is set. On a self-hosted runner that handles many
+        // PRs these files would otherwise accumulate indefinitely in os.tmpdir().
+        try {
+            fs.unlinkSync(reviewFile);
+        }
+        catch { /* ignore — non-fatal */ }
+        core.info(`[step 5/5] Review file cleaned up: ${reviewFile}`);
         core.info('=== local-ai-code-review-action done ===');
     }
     catch (error) {
