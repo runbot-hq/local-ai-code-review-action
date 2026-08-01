@@ -29922,7 +29922,7 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
-/***/ 9407:
+/***/ 9482:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -29961,50 +29961,12 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ensureBinary = ensureBinary;
 const core = __importStar(__nccwpck_require__(7484));
-const github = __importStar(__nccwpck_require__(3228));
-const child_process_1 = __nccwpck_require__(5317);
 const path = __importStar(__nccwpck_require__(6928));
 const fs = __importStar(__nccwpck_require__(9896));
-const https = __importStar(__nccwpck_require__(5692));
-const crypto = __importStar(__nccwpck_require__(6982));
 const os = __importStar(__nccwpck_require__(857));
-// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
-// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
-// so it can be matched reliably with String.includes()).
-// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
-// Do NOT merge them — if the footer text ever changes, search would break
-// for comments posted under the old format.
-const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
-const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
-// ---------------------------------------------------------------------------
-// Tier selection
-// ---------------------------------------------------------------------------
-// File extensions/names that carry no reviewable logic — excluded from the
-// reviewable-lines count used to select shallow vs deep review tier.
-const NON_CODE_PATTERNS = [
-    /\.md$/i,
-    /\.lock$/i,
-    /\.json$/i,
-    /\.yml$/i,
-    /\.yaml$/i,
-    /^package-lock\.json$/i,
-];
-function isNonCode(filename) {
-    const base = path.basename(filename);
-    return NON_CODE_PATTERNS.some(p => p.test(base));
-}
-function selectTier(files) {
-    const SHALLOW_THRESHOLD = 150;
-    const reviewableLines = files
-        .filter(f => !isNonCode(f.filename))
-        .reduce((sum, f) => sum + f.additions + f.deletions, 0);
-    const tier = reviewableLines >= SHALLOW_THRESHOLD ? 'deep' : 'shallow';
-    return { tier, reviewableLines };
-}
-// ---------------------------------------------------------------------------
-// Binary bootstrap
-// ---------------------------------------------------------------------------
+const http_1 = __nccwpck_require__(6803);
 async function ensureBinary(token) {
     const cacheDir = path.join(os.homedir(), '.cache', 'runbot-hq');
     const binPath = path.join(cacheDir, 'local-ai-cli-bin');
@@ -30012,7 +29974,7 @@ async function ensureBinary(token) {
     core.info(`[binary] Cache dir: ${cacheDir}`);
     core.info(`[binary] Bin path:  ${binPath}`);
     core.info(`[binary] Checking latest runbot-hq/local-ai-cli release...`);
-    const release = await httpsGetJson('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest', token);
+    const release = await (0, http_1.httpsGetJson)('https://api.github.com/repos/runbot-hq/local-ai-cli/releases/latest', token);
     const tagName = release.tag_name ?? 'unknown';
     const publishedAt = release.published_at ?? '';
     core.info(`[binary] Latest release tag: ${tagName} published_at: ${publishedAt}`);
@@ -30047,14 +30009,14 @@ async function ensureBinary(token) {
     fs.mkdirSync(cacheDir, { recursive: true });
     core.info(`[binary] Downloading ${asset.browser_download_url} ...`);
     const downloadStart = Date.now();
-    await httpsDownload(asset.browser_download_url, binPath);
+    await (0, http_1.httpsDownload)(asset.browser_download_url, binPath);
     const downloadMs = Date.now() - downloadStart;
     const binSize = fs.statSync(binPath).size;
     core.info(`[binary] Download complete in ${downloadMs}ms (${binSize} bytes)`);
     if (remoteDigest && remoteDigest.startsWith('sha256:')) {
         const expectedHex = remoteDigest.slice('sha256:'.length);
         core.info(`[binary] Verifying sha256...`);
-        const actualHex = sha256File(binPath);
+        const actualHex = (0, http_1.sha256File)(binPath);
         if (actualHex !== expectedHex) {
             fs.unlinkSync(binPath);
             throw new Error(`local-ai-cli-bin digest mismatch — expected sha256:${expectedHex}, got sha256:${actualHex}. ` +
@@ -30070,74 +30032,204 @@ async function ensureBinary(token) {
     core.info(`[binary] Binary ready at ${binPath}`);
     return binPath;
 }
-function httpsGetJson(url, token, redirectsLeft = 5) {
-    return new Promise((resolve, reject) => {
-        const headers = {
-            'User-Agent': 'runbot-hq/local-ai-code-review-action',
-            'Accept': 'application/vnd.github+json',
+
+
+/***/ }),
+
+/***/ 5581:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
         };
-        if (token)
-            headers['Authorization'] = `Bearer ${token}`;
-        const req = https.get(url, { headers }, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                if (redirectsLeft <= 0)
-                    return reject(new Error(`Too many redirects fetching ${url}`));
-                resolve(httpsGetJson(res.headers.location, token, redirectsLeft - 1));
-                return;
-            }
-            if (res.statusCode !== 200)
-                return reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`));
-            let body = '';
-            res.on('data', (chunk) => { body += chunk; });
-            res.on('end', () => {
-                try {
-                    resolve(JSON.parse(body));
-                }
-                catch (e) {
-                    reject(new Error(`Failed to parse JSON from ${url}: ${e}`));
-                }
-            });
-        });
-        req.on('error', reject);
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.localAiCli = localAiCli;
+exports.isFatalError = isFatalError;
+exports.isEmptyThinkExhaust = isEmptyThinkExhaust;
+const core = __importStar(__nccwpck_require__(7484));
+const child_process_1 = __nccwpck_require__(5317);
+// IMPORTANT: Do NOT refactor localAiCli to use execSync.
+// spawnSync passes argv directly to the OS without a shell interpreter.
+// execSync runs via /bin/sh — any shell metacharacter in the prompt or
+// instructions (backticks, $(), quotes, semicolons, etc.) would be executed.
+// spawnSync eliminates that entire attack surface. This is intentional.
+function localAiCli(bin, prompt, options) {
+    const timeoutSeconds = options?.timeoutSeconds ?? 600;
+    const args = ['--prompt', prompt];
+    if (options?.instructions)
+        args.push('--instructions', options.instructions);
+    if (options?.model)
+        args.push('--model', options.model);
+    if (options?.baseUrl)
+        args.push('--base-url', options.baseUrl);
+    if (options?.temperature !== undefined)
+        args.push('--temperature', String(options.temperature));
+    if (options?.maximumResponseTokens !== undefined)
+        args.push('--maximum-response-tokens', String(options.maximumResponseTokens));
+    args.push('--timeout', String(timeoutSeconds));
+    args.push('--think', options?.think ? 'true' : 'false');
+    core.info(`[cli] Invoking binary: ${bin}`);
+    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s think=${options?.think ?? false}`);
+    if (core.isDebug()) {
+        core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`);
+    }
+    const spawnTimeoutMs = (timeoutSeconds + 60) * 1000;
+    core.info(`[cli] spawnSync hard-kill timeout: ${spawnTimeoutMs / 1000}s`);
+    const callStart = Date.now();
+    const result = (0, child_process_1.spawnSync)(bin, args, {
+        encoding: 'utf8',
+        timeout: spawnTimeoutMs,
+        // 10 MB buffer — model output for large PRs can be verbose. Raises an
+        // error rather than silently truncating if the limit is ever exceeded.
+        maxBuffer: 10 * 1024 * 1024,
     });
+    const callMs = Date.now() - callStart;
+    core.info(`[cli] spawnSync returned in ${callMs}ms, exit code: ${result.status}`);
+    if (result.error) {
+        core.error(`[cli] spawnSync error: ${result.error}`);
+        throw result.error;
+    }
+    if (result.stderr) {
+        core.info(`[cli] stderr: ${result.stderr.trim()}`);
+    }
+    if (result.status !== 0) {
+        throw new Error(`local-ai-cli exited ${result.status}: ${result.stderr?.trim()}`);
+    }
+    const outputLen = result.stdout?.length ?? 0;
+    core.info(`[cli] stdout length: ${outputLen} chars`);
+    return result.stdout.trim();
 }
-// Auth token is intentionally NOT forwarded here. browser_download_url for
-// public GitHub releases resolves via a 302 redirect to an unauthenticated
-// S3/CDN URL — sending a Bearer token to that URL is both unnecessary and
-// would cause a 400. If this action is ever used against a private release
-// repo, this function will need to use the GitHub API asset-download endpoint
-// with an Authorization header instead.
-function httpsDownload(url, destPath, redirectsLeft = 5) {
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, {
-            headers: { 'User-Agent': 'runbot-hq/local-ai-code-review-action' },
-        }, (res) => {
-            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                if (redirectsLeft <= 0)
-                    return reject(new Error(`Too many redirects downloading ${url}`));
-                resolve(httpsDownload(res.headers.location, destPath, redirectsLeft - 1));
-                return;
-            }
-            if (res.statusCode !== 200)
-                return reject(new Error(`Download returned HTTP ${res.statusCode} for ${url}`));
-            const file = fs.createWriteStream(destPath);
-            res.pipe(file);
-            file.on('finish', () => file.close(() => resolve()));
-            file.on('error', (e) => { fs.unlink(destPath, () => { }); reject(e); });
-        });
-        req.on('error', reject);
-    });
+function isFatalError(e) {
+    const msg = String(e).toLowerCase();
+    return (msg.includes('invalid --base-url') ||
+        msg.includes('http 404') ||
+        msg.includes('eacces') ||
+        msg.includes('enoent'));
 }
-function sha256File(filePath) {
-    const buf = fs.readFileSync(filePath);
-    return crypto.createHash('sha256').update(buf).digest('hex');
+function isEmptyThinkExhaust(e, think) {
+    if (!think)
+        return false;
+    const msg = String(e);
+    return (msg.includes('empty response') &&
+        (msg.includes('done_reason=stop') || msg.includes('done_reason=length')));
 }
+
+
+/***/ }),
+
+/***/ 7242:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.NON_CODE_PATTERNS = exports.BOT_SIGNATURE = exports.BOT_SIGNATURE_SEARCH_KEY = void 0;
+// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
+// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
+// so it can be matched reliably with String.includes()).
+// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
+// Do NOT merge them — if the footer text ever changes, search would break
+// for comments posted under the old format.
+exports.BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
+exports.BOT_SIGNATURE = `\n\n---\n> 🤖 [${exports.BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
+// File extensions/names that carry no reviewable logic — excluded from the
+// reviewable-lines count used to select shallow vs deep review tier.
+exports.NON_CODE_PATTERNS = [
+    /\.md$/i,
+    /\.lock$/i,
+    /\.json$/i,
+    /\.yml$/i,
+    /\.yaml$/i,
+    /^package-lock\.json$/i,
+];
+
+
+/***/ }),
+
+/***/ 9248:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.networkDiag = networkDiag;
+exports.isRetryableError = isRetryableError;
+exports.withRetry = withRetry;
+exports.findAllBotCommentIds = findAllBotCommentIds;
+const core = __importStar(__nccwpck_require__(7484));
+const child_process_1 = __nccwpck_require__(5317);
+const constants_1 = __nccwpck_require__(7242);
 // ---------------------------------------------------------------------------
 // Network diagnostics
 // ---------------------------------------------------------------------------
 // execSync is safe here: every command string is a hardcoded literal with no
 // user-controlled input interpolated. This is the specific condition that makes
-// execSync acceptable — contrast with localAiCli below, where user-supplied
+// execSync acceptable — contrast with localAiCli in cli.ts, where user-supplied
 // prompt/instructions are passed as argv via spawnSync to prevent shell injection.
 function networkDiag(label) {
     core.info(`[net-diag:${label}] --- network diagnostics ---`);
@@ -30209,73 +30301,8 @@ async function withRetry(label, fn, maxAttempts = 3, delayMs = 3000) {
     throw new Error(`[${label}] exhausted all attempts`);
 }
 // ---------------------------------------------------------------------------
-// CLI wrapper
+// Bot comment helpers
 // ---------------------------------------------------------------------------
-// IMPORTANT: Do NOT refactor localAiCli to use execSync.
-// spawnSync passes argv directly to the OS without a shell interpreter.
-// execSync runs via /bin/sh — any shell metacharacter in the prompt or
-// instructions (backticks, $(), quotes, semicolons, etc.) would be executed.
-// spawnSync eliminates that entire attack surface. This is intentional.
-function localAiCli(bin, prompt, options) {
-    const timeoutSeconds = options?.timeoutSeconds ?? 600;
-    const args = ['--prompt', prompt];
-    if (options?.instructions)
-        args.push('--instructions', options.instructions);
-    if (options?.model)
-        args.push('--model', options.model);
-    if (options?.baseUrl)
-        args.push('--base-url', options.baseUrl);
-    if (options?.temperature !== undefined)
-        args.push('--temperature', String(options.temperature));
-    if (options?.maximumResponseTokens !== undefined)
-        args.push('--maximum-response-tokens', String(options.maximumResponseTokens));
-    args.push('--timeout', String(timeoutSeconds));
-    args.push('--think', options?.think ? 'true' : 'false');
-    core.info(`[cli] Invoking binary: ${bin}`);
-    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s think=${options?.think ?? false}`);
-    if (core.isDebug()) {
-        core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`);
-    }
-    const spawnTimeoutMs = (timeoutSeconds + 60) * 1000;
-    core.info(`[cli] spawnSync hard-kill timeout: ${spawnTimeoutMs / 1000}s`);
-    const callStart = Date.now();
-    const result = (0, child_process_1.spawnSync)(bin, args, {
-        encoding: 'utf8',
-        timeout: spawnTimeoutMs,
-        // 10 MB buffer — model output for large PRs can be verbose. Raises an
-        // error rather than silently truncating if the limit is ever exceeded.
-        maxBuffer: 10 * 1024 * 1024,
-    });
-    const callMs = Date.now() - callStart;
-    core.info(`[cli] spawnSync returned in ${callMs}ms, exit code: ${result.status}`);
-    if (result.error) {
-        core.error(`[cli] spawnSync error: ${result.error}`);
-        throw result.error;
-    }
-    if (result.stderr) {
-        core.info(`[cli] stderr: ${result.stderr.trim()}`);
-    }
-    if (result.status !== 0) {
-        throw new Error(`local-ai-cli exited ${result.status}: ${result.stderr?.trim()}`);
-    }
-    const outputLen = result.stdout?.length ?? 0;
-    core.info(`[cli] stdout length: ${outputLen} chars`);
-    return result.stdout.trim();
-}
-function isFatalError(e) {
-    const msg = String(e).toLowerCase();
-    return (msg.includes('invalid --base-url') ||
-        msg.includes('http 404') ||
-        msg.includes('eacces') ||
-        msg.includes('enoent'));
-}
-function isEmptyThinkExhaust(e, think) {
-    if (!think)
-        return false;
-    const msg = String(e);
-    return (msg.includes('empty response') &&
-        (msg.includes('done_reason=stop') || msg.includes('done_reason=length')));
-}
 // Returns the IDs of ALL bot comments on the PR across all pages.
 //
 // API scope: uses issues.listComments, which returns top-level PR comments
@@ -30309,7 +30336,7 @@ async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
         });
         core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`);
         const botIds = comments
-            .filter(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
+            .filter(c => c.body?.includes(constants_1.BOT_SIGNATURE_SEARCH_KEY))
             .map(c => c.id);
         ids.push(...botIds);
         // Standard pagination sentinel: fewer than per_page results means last page.
@@ -30326,6 +30353,168 @@ async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
     core.info(`[step 5/5] found ${uniqueIds.length} existing bot comment(s): ${uniqueIds.join(', ') || '(none)'}`);
     return uniqueIds;
 }
+
+
+/***/ }),
+
+/***/ 6803:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.httpsGetJson = httpsGetJson;
+exports.httpsDownload = httpsDownload;
+exports.sha256File = sha256File;
+const fs = __importStar(__nccwpck_require__(9896));
+const https = __importStar(__nccwpck_require__(5692));
+const crypto = __importStar(__nccwpck_require__(6982));
+function httpsGetJson(url, token, redirectsLeft = 5) {
+    return new Promise((resolve, reject) => {
+        const headers = {
+            'User-Agent': 'runbot-hq/local-ai-code-review-action',
+            'Accept': 'application/vnd.github+json',
+        };
+        if (token)
+            headers['Authorization'] = `Bearer ${token}`;
+        const req = https.get(url, { headers }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                if (redirectsLeft <= 0)
+                    return reject(new Error(`Too many redirects fetching ${url}`));
+                resolve(httpsGetJson(res.headers.location, token, redirectsLeft - 1));
+                return;
+            }
+            if (res.statusCode !== 200)
+                return reject(new Error(`GitHub API returned HTTP ${res.statusCode} for ${url}`));
+            let body = '';
+            res.on('data', (chunk) => { body += chunk; });
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(body));
+                }
+                catch (e) {
+                    reject(new Error(`Failed to parse JSON from ${url}: ${e}`));
+                }
+            });
+        });
+        req.on('error', reject);
+    });
+}
+// Auth token is intentionally NOT forwarded here. browser_download_url for
+// public GitHub releases resolves via a 302 redirect to an unauthenticated
+// S3/CDN URL — sending a Bearer token to that URL is both unnecessary and
+// would cause a 400. If this action is ever used against a private release
+// repo, this function will need to use the GitHub API asset-download endpoint
+// with an Authorization header instead.
+function httpsDownload(url, destPath, redirectsLeft = 5) {
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, {
+            headers: { 'User-Agent': 'runbot-hq/local-ai-code-review-action' },
+        }, (res) => {
+            if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                if (redirectsLeft <= 0)
+                    return reject(new Error(`Too many redirects downloading ${url}`));
+                resolve(httpsDownload(res.headers.location, destPath, redirectsLeft - 1));
+                return;
+            }
+            if (res.statusCode !== 200)
+                return reject(new Error(`Download returned HTTP ${res.statusCode} for ${url}`));
+            const file = fs.createWriteStream(destPath);
+            res.pipe(file);
+            file.on('finish', () => file.close(() => resolve()));
+            file.on('error', (e) => { fs.unlink(destPath, () => { }); reject(e); });
+        });
+        req.on('error', reject);
+    });
+}
+function sha256File(filePath) {
+    const buf = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+
+/***/ }),
+
+/***/ 9407:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+const os = __importStar(__nccwpck_require__(857));
+const constants_1 = __nccwpck_require__(7242);
+const tier_1 = __nccwpck_require__(4851);
+const binary_1 = __nccwpck_require__(9482);
+const cli_1 = __nccwpck_require__(5581);
+const github_1 = __nccwpck_require__(9248);
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -30437,7 +30626,7 @@ async function run() {
         // The commit message must be fetched via the API using pr.head.sha —
         // the only reliable source for the head commit message on a pull_request event.
         core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`);
-        const { data: headCommit } = await withRetry('fetch-head-commit', () => octokit.rest.repos.getCommit({
+        const { data: headCommit } = await (0, github_1.withRetry)('fetch-head-commit', () => octokit.rest.repos.getCommit({
             owner,
             repo: repoName,
             ref: pr.head.sha,
@@ -30456,7 +30645,7 @@ async function run() {
         // — committing dist is the standard convention for GitHub Actions written in
         // TypeScript/JavaScript so the action can run without a separate build step.
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
-        const bin = await ensureBinary(token);
+        const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         // 5. Fetch PR files
         // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
@@ -30489,7 +30678,7 @@ async function run() {
         // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
         // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
         // small enough that extended thinking adds latency without improving output.
-        const { tier, reviewableLines } = selectTier(files);
+        const { tier, reviewableLines } = (0, tier_1.selectTier)(files);
         const think = tier === 'deep';
         const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
         core.info(`[tier] ${tier}, reviewable_lines=${reviewableLines}, think=${think}, max_tokens=${maximumResponseTokens}${maximumResponseTokensOverride !== undefined ? ' (caller override)' : ''}`);
@@ -30541,21 +30730,21 @@ async function run() {
         const cliOpts = { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds, think };
         let review = '';
         try {
-            review = localAiCli(bin, prompt, cliOpts);
+            review = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
         }
         catch (e) {
             core.warning(`[step 4/5] Attempt 1 failed: ${String(e)}`);
-            if (isFatalError(e))
+            if ((0, cli_1.isFatalError)(e))
                 throw e;
-            if (isEmptyThinkExhaust(e, think)) {
+            if ((0, cli_1.isEmptyThinkExhaust)(e, think)) {
                 core.warning('[step 4/5] think=true produced empty response — retrying with think=false');
-                review = localAiCli(bin, prompt, { ...cliOpts, think: false });
+                review = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
             }
             else {
                 core.info('[step 4/5] Retrying in 15s (cold-start model load)...');
                 await new Promise(r => setTimeout(r, 15000));
                 core.info('[step 4/5] Attempt 2...');
-                review = localAiCli(bin, prompt, cliOpts);
+                review = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
             }
         }
         if (!review)
@@ -30565,8 +30754,8 @@ async function run() {
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
         core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
-        networkDiag('pre-post');
-        const fullReview = review + BOT_SIGNATURE;
+        (0, github_1.networkDiag)('pre-post');
+        const fullReview = review + constants_1.BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
         if (replaceExistingComment) {
             // Delete ALL existing bot comments before posting a fresh one.
@@ -30579,10 +30768,10 @@ async function run() {
             // is reached, so no new comment is posted on partial failure. The PR is
             // left in a partially-cleaned state, but the next run will catch any
             // survivors via findAllBotCommentIds and clean them up (self-healing).
-            const existingIds = await withRetry('find-comments', () => findAllBotCommentIds(octokit, owner, repoName, prNumber));
+            const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
             for (const id of existingIds) {
                 core.info(`[step 5/5] deleting bot comment id=${id}...`);
-                await withRetry(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
+                await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
                 core.info(`[step 5/5] deleted bot comment id=${id}`);
             }
             if (existingIds.length === 0) {
@@ -30596,7 +30785,7 @@ async function run() {
             core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`);
         }
         core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`);
-        const { data: comment } = await withRetry('create-comment', () => octokit.rest.issues.createComment({
+        const { data: comment } = await (0, github_1.withRetry)('create-comment', () => octokit.rest.issues.createComment({
             owner,
             repo: repoName,
             issue_number: prNumber,
@@ -30619,6 +30808,65 @@ async function run() {
     }
 }
 run();
+
+
+/***/ }),
+
+/***/ 4851:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isNonCode = isNonCode;
+exports.selectTier = selectTier;
+const path = __importStar(__nccwpck_require__(6928));
+const constants_1 = __nccwpck_require__(7242);
+function isNonCode(filename) {
+    const base = path.basename(filename);
+    return constants_1.NON_CODE_PATTERNS.some(p => p.test(base));
+}
+function selectTier(files) {
+    const SHALLOW_THRESHOLD = 150;
+    const reviewableLines = files
+        .filter(f => !isNonCode(f.filename))
+        .reduce((sum, f) => sum + f.additions + f.deletions, 0);
+    const tier = reviewableLines >= SHALLOW_THRESHOLD ? 'deep' : 'shallow';
+    return { tier, reviewableLines };
+}
 
 
 /***/ }),
