@@ -1,5 +1,5 @@
 import * as core from '@actions/core'
-import * as github from '@actions/github'
+import type * as github from '@actions/github'
 import { execSync } from 'child_process'
 import { BOT_SIGNATURE_SEARCH_KEY } from './constants'
 
