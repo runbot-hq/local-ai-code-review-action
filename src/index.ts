@@ -11,6 +11,15 @@ import { withRetry, findAllBotCommentIds, networkDiag } from './github'
 // Main
 // ---------------------------------------------------------------------------
 
+// Prevents ##[...] and ::...:: annotation sequences in arbitrary strings
+// (e.g. error messages, model output fragments) from being re-interpreted
+// as live GitHub Actions runner commands when passed to core.setFailed(),
+// core.warning(), or core.error().
+// Safe to apply unconditionally — normal log text is unaffected.
+function sanitizeForRunner(s: string): string {
+  return s.replace(/##\[/g, '#[').replace(/::/g, ': :')
+}
+
 async function run(): Promise<void> {
   try {
     core.info('=== local-ai-code-review-action starting ===')
@@ -333,7 +342,7 @@ async function run(): Promise<void> {
 
     core.info('=== local-ai-code-review-action done ===')
   } catch (error) {
-    core.setFailed(error instanceof Error ? error.message : String(error))
+    core.setFailed(sanitizeForRunner(error instanceof Error ? error.message : String(error)))
   }
 }
 
