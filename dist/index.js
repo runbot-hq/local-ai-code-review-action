@@ -30808,27 +30808,30 @@ async function run() {
         }));
         core.info(`[step 5/5] Review posted: ${comment.html_url}`);
         core.setOutput('review_body', fullReview);
-        // Write review to a temp file so the caller can `cat` it in a dedicated
-        // step with zero runner chrome. Passing the full body via env vars causes
-        // the runner to dump the entire value in the step preamble (env: block),
-        // which cannot be suppressed. A file path is a short string — no dump.
+        // Write review to a temp file so the post: script can cat it cleanly.
+        // Passing the full body via env vars causes the runner to dump the entire
+        // value in the step preamble (env: block), which cannot be suppressed.
+        // A file path is a short string — no dump.
         //
         // RUNNER_TEMP is the correct directory for job-scoped temp files on both
         // GitHub-hosted and self-hosted runners. The runner agent cleans it at job
         // completion. Do NOT use os.tmpdir() here — on self-hosted runners that
         // directory is shared across jobs and not cleaned automatically.
-        // Do NOT delete this file — the consumer `cat` step runs after this step
+        // Do NOT delete this file — the post: script runs after this step
         // completes and requires the file to still exist.
         //
         // The write is best-effort: the PR comment is already posted at this point.
         // A file I/O failure (e.g. unwritable RUNNER_TEMP on a misconfigured runner)
-        // must not fail the job. The consumer step's if: ... != '' guard handles
-        // the absent-output case cleanly.
+        // must not fail the job. The post: script guards on state being set.
         try {
             const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
             const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
             fs.writeFileSync(reviewFile, fullReview, 'utf8');
             core.setOutput('review_file', reviewFile);
+            // Save to state so the post: script can read it via core.getState().
+            // Outputs are not accessible in post: scripts — state is the correct
+            // inter-script communication mechanism for JS actions.
+            core.saveState('review_file', reviewFile);
             core.info(`[step 5/5] Review file: ${reviewFile}`);
         }
         catch (e) {
