@@ -1,6 +1,8 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+import * as fs from 'fs'
 import * as os from 'os'
+import * as path from 'path'
 import { BOT_SIGNATURE } from './constants'
 import { selectTier } from './tier'
 import { ensureBinary } from './binary'
@@ -280,7 +282,7 @@ async function run(): Promise<void> {
     }
 
     if (!review) throw new Error('local-ai-cli returned empty output')
-    core.info(`[step 4/5] Review complete (${review.length} chars) — rendered in job summary below`)
+    core.info(`[step 4/5] Review complete (${review.length} chars)`)
 
     // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
     core.info('[step 5/5] Posting PR comment...')
@@ -335,6 +337,15 @@ async function run(): Promise<void> {
 
     core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
+
+    // Write review to a temp file so the caller can `cat` it in a dedicated
+    // step with zero runner chrome. Passing the full body via env vars causes
+    // the runner to dump the entire value in the step preamble (env: block),
+    // which cannot be suppressed. A file path is a short string — no dump.
+    const reviewFile = path.join(os.tmpdir(), `ai-review-${prNumber}-${Date.now()}.md`)
+    fs.writeFileSync(reviewFile, fullReview, 'utf8')
+    core.setOutput('review_file', reviewFile)
+    core.info(`[step 5/5] Review file: ${reviewFile}`)
 
     await core.summary
       .addHeading(`🤖 AI Code Review: PR #${prNumber}`)

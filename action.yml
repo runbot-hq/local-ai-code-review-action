@@ -46,6 +46,8 @@ inputs:
 outputs:
   review_body:
     description: 'The full review comment posted to the PR'
+  review_file:
+    description: 'Path to a temp file containing the full review body — use with `cat` in a subsequent step for clean output with no runner chrome'
 
 # local-ai-cli-bin is NOT committed to this repo.
 # It is downloaded at runtime by ensureBinary() in src/index.ts from the
