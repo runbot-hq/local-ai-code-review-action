@@ -15,9 +15,14 @@ import { withRetry, findAllBotCommentIds, networkDiag } from './github'
 // (e.g. error messages, model output fragments) from being re-interpreted
 // as live GitHub Actions runner commands when passed to core.setFailed(),
 // core.warning(), or core.error().
+// The :: replacement is scoped to line-starts only — runner commands require
+// :: at the beginning of a line. A global replace would mangle IPv6 addresses,
+// C++/Rust/Ruby scope-resolution operators, and other legitimate :: usage.
 // Safe to apply unconditionally — normal log text is unaffected.
 function sanitizeForRunner(s: string): string {
-  return s.replace(/##\[/g, '#[').replace(/::/g, ': :')
+  return s
+    .replace(/##\[/g, '#[')
+    .replace(/(^|[\r\n])::/gm, '$1: :')
 }
 
 async function run(): Promise<void> {
