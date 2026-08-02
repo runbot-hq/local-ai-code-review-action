@@ -243,16 +243,38 @@ async function run(): Promise<void> {
     }
 
     // 8. Call model
+    //
+    // IMPORTANT: Instructions are intentionally embedded directly in the user
+    // prompt rather than passed via --instructions (the system prompt channel).
+    //
+    // Ollama does not reliably inject system prompts for Qwen models — the
+    // template engine silently drops the system field for certain Qwen model
+    // families, meaning --instructions would be invisible to the model.
+    // Embedding instructions at the top of the user prompt is the documented
+    // workaround and ensures the model always receives them.
+    //
+    // Reference: https://github.com/ollama/ollama/issues (system prompt ignored for Qwen)
     const instructions = [
       'You are a senior software engineer performing a concise, constructive code review.',
       'Focus on: bugs, security issues, best practices, performance, and code clarity.',
       'Use Markdown. Group feedback by filename using ### headers.',
       'Use bullet points for individual issues. Be specific — reference line numbers where possible.',
-      'Do NOT summarise what the code does. Do NOT praise. Only flag issues, risks, and concrete suggestions.',
-      'If there are no issues in a file, skip it entirely.',
-    ].join(' ')
+      'Do NOT summarise what the code does. Do NOT praise. Do NOT write a changelog or description of changes.',
+      'Only output ### filename headers followed by bullet-point issues. No prose paragraphs. No introduction. No conclusion.',
+      'If a file has no issues, write exactly: "✅ No issues." under its ### header.',
+      'If the entire diff has no issues, output only: "✅ No issues found in this PR." and stop.',
+      '',
+      'EXAMPLE OUTPUT:',
+      '### src/Cache.swift',
+      '- Line 23: Force-unwrap `data!` will crash if the response is nil. Use `guard let` or optional binding.',
+      '- Line 67: `cache` is mutated from multiple threads without synchronization — wrap in an actor or use a lock.',
+      '### src/Theme.swift',
+      '✅ No issues.',
+    ].join('\n')
 
     const prompt = [
+      instructions,
+      '',
       `Review the following pull request diff.`,
       `PR #${prNumber}: "${prTitle}"`,
       '',
@@ -262,8 +284,10 @@ async function run(): Promise<void> {
       ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
     ].join('\n')
 
+    // Pass empty string for instructions so the binary does not also forward
+    // them as a system prompt — they are already embedded in the user prompt above.
     core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think})...`)
-    const cliOpts = { instructions, model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds, think }
+    const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds, think }
     let review = ''
     try {
       review = localAiCli(bin, prompt, cliOpts)
