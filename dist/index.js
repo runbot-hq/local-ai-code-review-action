@@ -30570,6 +30570,14 @@ async function run() {
             core.warning('[init] prompt_extra was truncated to 300 chars');
         const promptExtra = promptExtraRaw.slice(0, 300);
         // === replace_existing_comment ===
+        // core.getInput() ALWAYS returns a string — never a boolean — regardless of
+        // how the value is declared in action.yml. The default: 'false' in action.yml
+        // is correct string syntax per the GitHub Actions spec; it is not a type error.
+        // The === 'true' comparison is therefore the correct and idiomatic idiom here.
+        // Any value other than the string 'true' (including empty string, the default)
+        // safely resolves to false — no existing workflow is affected by this input.
+        // The warning below catches common YAML misconfigurations like `yes` or `True`
+        // that would silently behave as false without it.
         const rawReplaceExistingComment = core.getInput('replace_existing_comment');
         if (rawReplaceExistingComment && rawReplaceExistingComment !== 'true' && rawReplaceExistingComment !== 'false') {
             core.warning(`[init] replace_existing_comment: unrecognised value "${rawReplaceExistingComment}" — treating as false. Use 'true' or 'false'.`);
@@ -30577,17 +30585,49 @@ async function run() {
         const replaceExistingComment = rawReplaceExistingComment === 'true';
         core.info(`[init] replace_existing_comment: ${replaceExistingComment}`);
         // === maximum_response_tokens ===
+        // There is intentionally NO hardcoded default here. action.yml does not
+        // declare a default for this input either. The actual runtime defaults are
+        // tier-driven: 4096 for shallow reviews (< 150 reviewable lines) and 8192
+        // for deep reviews (≥ 150 reviewable lines), applied below after tier
+        // selection. Setting this input explicitly overrides the tier default.
+        // Radix 10 is explicit to prevent misparse of '0'-prefixed strings as octal.
         const rawMaxTokens = core.getInput('maximum_response_tokens');
         const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined;
         // === skip_review_label ===
+        // Checked against PR title, PR body, and head commit message — all lowercased
+        // for a case-insensitive match. The check fires before binary download and
+        // diff fetch; the only cost on a skipped run is the repos.getCommit API call
+        // below (needed to read the head commit message — see comment there).
+        //
+        // Capture the raw input once — used both for the whitespace-only guard
+        // (.length > 0) and as the base for trimming. Calling core.getInput() twice
+        // is redundant since the value cannot change within a synchronous block.
         const rawSkipLabel = core.getInput('skip_review_label');
+        // Trim separately so the warning guard can distinguish between "not set"
+        // (empty string, length === 0) and "set but whitespace-only" (length > 0,
+        // trims to ''). A whitespace-only value must not silently match every PR.
         const skipLabelTrimmed = rawSkipLabel.trim();
+        // Warn only when the caller explicitly set the input to whitespace — a
+        // silent fallback here would be confusing since behaviour changes without
+        // notice.
         if (!skipLabelTrimmed && rawSkipLabel.length > 0) {
             core.warning('[init] skip_review_label is whitespace-only — falling back to default "[skip ai review]"');
         }
+        // Lowercase once at assignment so every comparison below (title, body,
+        // commit message) can use a plain .includes() without repeated .toLowerCase()
+        // calls.
         const skipLabel = (skipLabelTrimmed || '[skip ai review]').toLowerCase();
         core.info(`[init] skip_review_label: "${skipLabel}"`);
+        // octokit is constructed early and intentionally in scope for the full run()
+        // function — it is reused both here (skip check) and in steps 2/5 and 5/5
+        // below. This is not an accident; do not re-scope it closer to step 4.
         const octokit = github.getOctokit(token);
+        // Short-circuit on title/body first — both are already in
+        // context.payload.pull_request at zero cost. Only pay the
+        // repos.getCommit round-trip if neither matched, since the commit
+        // message is the only source that requires an API call.
+        // prBody is declared here, adjacent to its only use, with .toLowerCase()
+        // deferred to the comparison site — consistent with how prTitle is handled.
         const prBody = pr.body ?? '';
         const titleBodyMatch = prTitle.toLowerCase().includes(skipLabel) ||
             prBody.toLowerCase().includes(skipLabel);
@@ -30595,6 +30635,11 @@ async function run() {
             core.info(`[init] Skip label "${skipLabel}" detected in title/body — skipping AI review.`);
             return;
         }
+        // Title and body didn't match — fetch head commit message as the final check.
+        // IMPORTANT: context.payload.head_commit is populated on push events only,
+        // NOT on pull_request events. On a PR trigger it is always undefined.
+        // The commit message must be fetched via the API using pr.head.sha —
+        // the only reliable source for the head commit message on a pull_request event.
         core.info(`[init] Fetching head commit message for skip check (sha: ${pr.head.sha})...`);
         const { data: headCommit } = await (0, github_1.withRetry)('fetch-head-commit', () => octokit.rest.repos.getCommit({
             owner,
@@ -30609,10 +30654,21 @@ async function run() {
         }
         core.info(`[init] skip_review_label: not found — proceeding with review`);
         // 4. Ensure binary (authenticated)
+        // dist/index.js is a committed build artifact (produced by `npm run build`
+        // which runs ncc). It is rebuilt automatically by .github/workflows/build.yml
+        // on every push to main. Do NOT raise "dist/index.js should not be committed"
+        // — committing dist is the standard convention for GitHub Actions written in
+        // TypeScript/JavaScript so the action can run without a separate build step.
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         // 5. Fetch PR files
+        // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
+        // paginated. The GitHub API hard-limit for this endpoint is also 3000 files,
+        // but in practice PRs with >100 changed files produce diffs that far exceed
+        // the MAX_PATCH_CHARS budget anyway. The files.length === 100 warning below
+        // surfaces the truncation in CI logs. Paginating here would add complexity
+        // without meaningfully improving review quality for such large PRs.
         core.info('[step 2/5] Fetching PR changed files...');
         const { data: files } = await octokit.rest.pulls.listFiles({
             owner,
@@ -30631,7 +30687,12 @@ async function run() {
         if (files.length === 100) {
             core.warning('[step 2/5] 100 files returned — list may be truncated by GitHub API.');
         }
-        // 6. Select review tier
+        // 6. Select review tier based on reviewable lines
+        // Tier drives both think-mode and the maximum_response_tokens default.
+        // shallow: < 150 reviewable lines — think=false, max_tokens=4096
+        // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
+        // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
+        // small enough that extended thinking adds latency without improving output.
         const { tier, reviewableLines } = (0, tier_1.selectTier)(files);
         const think = tier === 'deep';
         const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
@@ -30698,6 +30759,8 @@ async function run() {
             `PR #${prNumber}: "${prTitle}"`,
             '',
             diffBlock,
+            // prompt_extra is capped at 300 chars to prevent prompt injection via
+            // workflow inputs and to keep the prompt size predictable across tiers.
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
         // Pass empty string for instructions so the binary does not also forward
@@ -30726,7 +30789,7 @@ async function run() {
         if (!review)
             throw new Error('local-ai-cli returned empty output');
         core.info(`[step 4/5] Review complete (${review.length} chars)`);
-        // 9. Post comment
+        // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
         core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
@@ -30734,6 +30797,16 @@ async function run() {
         const fullReview = review + constants_1.BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
         if (replaceExistingComment) {
+            // Delete ALL existing bot comments before posting a fresh one.
+            //
+            // Per-comment withRetry labels (delete-comment-{id}) are intentional —
+            // they make individual deletion failures identifiable in CI logs without
+            // conflating retries across different comment IDs.
+            //
+            // Ordering is load-bearing: a throw mid-loop exits before createComment
+            // is reached, so no new comment is posted on partial failure. The PR is
+            // left in a partially-cleaned state, but the next run will catch any
+            // survivors via findAllBotCommentIds and clean them up (self-healing).
             const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
             for (const id of existingIds) {
                 core.info(`[step 5/5] deleting bot comment id=${id}...`);
@@ -30745,6 +30818,9 @@ async function run() {
             }
         }
         else {
+            // Default path (replace_existing_comment=false): skip the find+delete
+            // entirely — no API calls, no latency. Every review run appends a new
+            // comment so the full review history is preserved on the PR thread.
             core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`);
         }
         core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`);
@@ -30756,11 +30832,29 @@ async function run() {
         }));
         core.info(`[step 5/5] Review posted: ${comment.html_url}`);
         core.setOutput('review_body', fullReview);
+        // Write review to a temp file so the post: script can cat it cleanly.
+        // Passing the full body via env vars causes the runner to dump the entire
+        // value in the step preamble (env: block), which cannot be suppressed.
+        // A file path is a short string — no dump.
+        //
+        // RUNNER_TEMP is the correct directory for job-scoped temp files on both
+        // GitHub-hosted and self-hosted runners. The runner agent cleans it at job
+        // completion. Do NOT use os.tmpdir() here — on self-hosted runners that
+        // directory is shared across jobs and not cleaned automatically.
+        // Do NOT delete this file — the post: script runs after this step
+        // completes and requires the file to still exist.
+        //
+        // The write is best-effort: the PR comment is already posted at this point.
+        // A file I/O failure (e.g. unwritable RUNNER_TEMP on a misconfigured runner)
+        // must not fail the job. The post: script guards on state being set.
         try {
             const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
             const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
             fs.writeFileSync(reviewFile, fullReview, 'utf8');
             core.setOutput('review_file', reviewFile);
+            // Save to state so the post: script can read it via core.getState().
+            // Outputs are not accessible in post: scripts — state is the correct
+            // inter-script communication mechanism for JS actions.
             core.saveState('review_file', reviewFile);
             core.info(`[step 5/5] Review file: ${reviewFile}`);
         }
