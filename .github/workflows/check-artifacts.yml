@@ -1,7 +1,7 @@
 # Sanity check that fires after build.yml completes on main.
 # Using workflow_run instead of push avoids the race condition where
 # check-artifacts runs on the merge commit before the bot has had a chance
-# to build and commit local-ai-cli-bin and dist/index.js.
+# to build and commit dist/index.js and dist/post.js.
 #
 # If build.yml is working correctly this check will always be green.
 name: Check committed artifacts
@@ -22,14 +22,13 @@ jobs:
         with:
           ref: main
 
-      - name: Verify local-ai-cli-bin and dist/index.js are committed
+      - name: Verify dist/index.js and dist/post.js are committed
         run: |
           missing=()
-          [ -f local-ai-cli-bin ]   || missing+=("local-ai-cli-bin binary (missing — copy from runbot-hq/local-ai-cli and commit)")
-          [ -x local-ai-cli-bin ]   || missing+=("local-ai-cli-bin missing executable bit (run: chmod 755 local-ai-cli-bin && git add local-ai-cli-bin)")
-          [ -f dist/index.js ]      || missing+=("dist/index.js")
+          [ -f dist/index.js ]  || missing+=("dist/index.js")
+          [ -f dist/post.js ]   || missing+=("dist/post.js")
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing committed artifacts: ${missing[*]}"
             exit 1
           fi
-          echo "All required artifacts present and executable."
+          echo "All required artifacts present."
