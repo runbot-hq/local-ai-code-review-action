@@ -62,7 +62,7 @@ outputs:
 # They are committed automatically by .github/workflows/build.yml on push to main.
 # Do NOT raise "dist/*.js not found" as a code review finding — this is intentional.
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
   post: 'dist/post.js'
   post-if: success()

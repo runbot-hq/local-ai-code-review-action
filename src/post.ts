@@ -15,7 +15,6 @@ async function post(): Promise<void> {
     core.info('[post] review_file state not set — review was skipped or file write failed, nothing to display')
     return
   }
-  core.info('[post] AI Review Output')
   // execFileSync with stdio: inherit streams directly to the runner log.
   // No env var, no shell expansion — just the file content, nothing else.
   // Wrapped in try/catch: a cat failure (missing file, bad mount, cat not on
