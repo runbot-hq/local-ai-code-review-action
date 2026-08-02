@@ -4,7 +4,7 @@
   "description": "GitHub Action that reviews PRs using a local Ollama model on a self-hosted runner",
   "main": "dist/index.js",
   "scripts": {
-    "build": "ncc build src/index.ts --license licenses.txt",
+    "build": "ncc build src/index.ts --license licenses.txt && ncc build src/post.ts -o dist-post --license licenses.txt && mv dist-post/index.js dist/post.js && rm -rf dist-post",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
