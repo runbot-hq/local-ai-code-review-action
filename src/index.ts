@@ -122,18 +122,18 @@ async function run(): Promise<void> {
     core.info(`[init] replace_existing_comment: ${replaceExistingComment}`)
 
     // === skip_comment_if_no_issues ===
-    // When true, the createComment call (and, if replace_existing_comment is
-    // also true, cleanup of prior bot comments) is skipped when the model
-    // reports zero issues across every reviewed file. The review_body and
-    // review_file outputs and the job summary are still populated — this only
-    // suppresses the PR comment itself, so downstream steps depending on the
-    // outputs are unaffected. Default false preserves the original behavior of
-    // always posting, including all-clear reviews.
+    // When true (the default), the createComment call (and, if
+    // replace_existing_comment is also true, cleanup of prior bot comments) is
+    // skipped when the model reports zero issues across every reviewed file.
+    // The review_body and review_file outputs and the job summary are still
+    // populated regardless — this only suppresses the PR comment itself, so
+    // downstream steps depending on the outputs are unaffected. Set to false
+    // to always post a comment, including all-clear reviews.
     const rawSkipCommentIfNoIssues = core.getInput('skip_comment_if_no_issues')
     if (rawSkipCommentIfNoIssues && rawSkipCommentIfNoIssues !== 'true' && rawSkipCommentIfNoIssues !== 'false') {
-      core.warning(`[init] skip_comment_if_no_issues: unrecognised value "${rawSkipCommentIfNoIssues}" — treating as false. Use 'true' or 'false'.`)
+      core.warning(`[init] skip_comment_if_no_issues: unrecognised value "${rawSkipCommentIfNoIssues}" — treating as true (default). Use 'true' or 'false'.`)
     }
-    const skipCommentIfNoIssues = rawSkipCommentIfNoIssues === 'true'
+    const skipCommentIfNoIssues = rawSkipCommentIfNoIssues !== 'false'
     core.info(`[init] skip_comment_if_no_issues: ${skipCommentIfNoIssues}`)
 
     // === maximum_response_tokens ===
