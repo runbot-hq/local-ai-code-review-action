@@ -121,6 +121,21 @@ async function run(): Promise<void> {
     const replaceExistingComment = rawReplaceExistingComment === 'true'
     core.info(`[init] replace_existing_comment: ${replaceExistingComment}`)
 
+    // === skip_comment_if_no_issues ===
+    // When true, the createComment call (and, if replace_existing_comment is
+    // also true, cleanup of prior bot comments) is skipped when the model
+    // reports zero issues across every reviewed file. The review_body and
+    // review_file outputs and the job summary are still populated — this only
+    // suppresses the PR comment itself, so downstream steps depending on the
+    // outputs are unaffected. Default false preserves the original behavior of
+    // always posting, including all-clear reviews.
+    const rawSkipCommentIfNoIssues = core.getInput('skip_comment_if_no_issues')
+    if (rawSkipCommentIfNoIssues && rawSkipCommentIfNoIssues !== 'true' && rawSkipCommentIfNoIssues !== 'false') {
+      core.warning(`[init] skip_comment_if_no_issues: unrecognised value "${rawSkipCommentIfNoIssues}" — treating as false. Use 'true' or 'false'.`)
+    }
+    const skipCommentIfNoIssues = rawSkipCommentIfNoIssues === 'true'
+    core.info(`[init] skip_comment_if_no_issues: ${skipCommentIfNoIssues}`)
+
     // === maximum_response_tokens ===
     // There is intentionally NO hardcoded default here. action.yml does not
     // declare a default for this input either. The actual runtime defaults are
@@ -364,13 +379,20 @@ async function run(): Promise<void> {
     // emit e.g. `{}` instead of `{"files":[]}`), fall back to posting the raw
     // text with a warning prefix rather than failing the whole run: the
     // reviewer still gets *something* to look at.
+    //
+    // noIssuesFound tracks whether every reviewed file came back with an empty
+    // issues list, used below by skip_comment_if_no_issues. It stays false on
+    // the fallback (raw-text) path — an unparseable response is not the same
+    // as a confirmed all-clear, so it must still be posted for visibility.
     let review: string
+    let noIssuesFound = false
     try {
       const parsed = JSON.parse(rawReview)
       if (!isParsedReview(parsed)) {
         throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)')
       }
       review = renderReviewMarkdown(parsed)
+      noIssuesFound = parsed.files.every((f) => f.issues.length === 0)
       core.info(`[step 4/5] Rendered ${parsed.files.length} file section(s) from structured output`)
     } catch (e) {
       core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`)
@@ -387,48 +409,76 @@ async function run(): Promise<void> {
     const fullReview = review + BOT_SIGNATURE
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
-    if (replaceExistingComment) {
-      // Delete ALL existing bot comments before posting a fresh one.
-      //
-      // Per-comment withRetry labels (delete-comment-{id}) are intentional —
-      // they make individual deletion failures identifiable in CI logs without
-      // conflating retries across different comment IDs.
-      //
-      // Ordering is load-bearing: a throw mid-loop exits before createComment
-      // is reached, so no new comment is posted on partial failure. The PR is
-      // left in a partially-cleaned state, but the next run will catch any
-      // survivors via findAllBotCommentIds and clean them up (self-healing).
+    // skip_comment_if_no_issues short-circuits ONLY the comment-posting side —
+    // outputs, review file, and job summary below are populated unconditionally
+    // so downstream steps relying on them behave identically either way.
+    const skipPosting = skipCommentIfNoIssues && noIssuesFound
+    if (skipPosting) {
+      core.info('[step 5/5] skip_comment_if_no_issues=true and no issues found — skipping comment post')
+    }
+
+    if (skipPosting && replaceExistingComment) {
+      // Even when skipping the new comment, still clean up prior bot comments —
+      // otherwise a PR that had issues, then got fixed, would keep showing a
+      // stale "issues found" comment forever with no replacement.
       const existingIds = await withRetry('find-comments', () =>
         findAllBotCommentIds(octokit, owner, repoName, prNumber)
       )
       for (const id of existingIds) {
-        core.info(`[step 5/5] deleting bot comment id=${id}...`)
+        core.info(`[step 5/5] deleting stale bot comment id=${id}...`)
         await withRetry(`delete-comment-${id}`, () =>
           octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id })
         )
-        core.info(`[step 5/5] deleted bot comment id=${id}`)
+        core.info(`[step 5/5] deleted stale bot comment id=${id}`)
       }
       if (existingIds.length === 0) {
         core.info(`[step 5/5] no previous bot comments to delete`)
       }
-    } else {
-      // Default path (replace_existing_comment=false): skip the find+delete
-      // entirely — no API calls, no latency. Every review run appends a new
-      // comment so the full review history is preserved on the PR thread.
-      core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`)
+    } else if (!skipPosting) {
+      if (replaceExistingComment) {
+        // Delete ALL existing bot comments before posting a fresh one.
+        //
+        // Per-comment withRetry labels (delete-comment-{id}) are intentional —
+        // they make individual deletion failures identifiable in CI logs without
+        // conflating retries across different comment IDs.
+        //
+        // Ordering is load-bearing: a throw mid-loop exits before createComment
+        // is reached, so no new comment is posted on partial failure. The PR is
+        // left in a partially-cleaned state, but the next run will catch any
+        // survivors via findAllBotCommentIds and clean them up (self-healing).
+        const existingIds = await withRetry('find-comments', () =>
+          findAllBotCommentIds(octokit, owner, repoName, prNumber)
+        )
+        for (const id of existingIds) {
+          core.info(`[step 5/5] deleting bot comment id=${id}...`)
+          await withRetry(`delete-comment-${id}`, () =>
+            octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id })
+          )
+          core.info(`[step 5/5] deleted bot comment id=${id}`)
+        }
+        if (existingIds.length === 0) {
+          core.info(`[step 5/5] no previous bot comments to delete`)
+        }
+      } else {
+        // Default path (replace_existing_comment=false): skip the find+delete
+        // entirely — no API calls, no latency. Every review run appends a new
+        // comment so the full review history is preserved on the PR thread.
+        core.info(`[step 5/5] replace_existing_comment=false — preserving all prior bot comments`)
+      }
+
+      core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`)
+      const { data: comment } = await withRetry('create-comment', () =>
+        octokit.rest.issues.createComment({
+          owner,
+          repo: repoName,
+          issue_number: prNumber,
+          body: fullReview,
+        })
+      )
+
+      core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     }
 
-    core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`)
-    const { data: comment } = await withRetry('create-comment', () =>
-      octokit.rest.issues.createComment({
-        owner,
-        repo: repoName,
-        issue_number: prNumber,
-        body: fullReview,
-      })
-    )
-
-    core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     core.setOutput('review_body', fullReview)
 
     // Write review to a temp file so the post: script can cat it cleanly.
