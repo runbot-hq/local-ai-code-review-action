@@ -67,6 +67,25 @@ async function run(): Promise<void> {
     if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     const promptExtra    = promptExtraRaw.slice(0, 300)
 
+    // === think ===
+    // Override for Qwen/Ollama "thinking" mode. This is NOT the tier-based
+    // dynamic default — it is a hard override switch on top of it.
+    // - 'false' (default): always non-think, regardless of tier. Testing showed
+    //   think mode can exhaust the token budget with no output on this
+    //   model/task on typical hardware.
+    // - 'true': restores the original dynamic tier-based behavior — deep-tier
+    //   diffs attempt thinking first (with automatic fallback to non-think on
+    //   empty-response exhaustion via isEmptyThinkExhaust), shallow-tier diffs
+    //   stay non-think. May perform better on faster hardware.
+    // The actual `think` value used per-call is resolved after tier selection
+    // below (see step 6), since 'true' still depends on the tier.
+    const rawThink = core.getInput('think')
+    if (rawThink && rawThink !== 'true' && rawThink !== 'false') {
+      core.warning(`[init] think: unrecognised value "${rawThink}" — treating as false. Use 'true' or 'false'.`)
+    }
+    const thinkOverride = rawThink === 'true'
+    core.info(`[init] think override: ${thinkOverride}`)
+
     // === replace_existing_comment ===
     // core.getInput() ALWAYS returns a string — never a boolean — regardless of
     // how the value is declared in action.yml. The default: 'false' in action.yml
@@ -203,13 +222,19 @@ async function run(): Promise<void> {
     }
 
     // 6. Select review tier based on reviewable lines
-    // Tier drives both think-mode and the maximum_response_tokens default.
+    // Tier drives both the dynamic think-mode default and the
+    // maximum_response_tokens default.
     // shallow: < 150 reviewable lines — think=false, max_tokens=4096
     // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
     // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
     // small enough that extended thinking adds latency without improving output.
+    //
+    // The `think` input (thinkOverride) is a hard override on top of this:
+    // when thinkOverride is false (the default), think is always false
+    // regardless of tier. When thinkOverride is true, the tier-based dynamic
+    // behavior above is restored.
     const { tier, reviewableLines } = selectTier(files)
-    const think = tier === 'deep'
+    const think = thinkOverride && tier === 'deep'
     const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096)
     core.info(`[tier] ${tier}, reviewable_lines=${reviewableLines}, think=${think}, max_tokens=${maximumResponseTokens}${maximumResponseTokensOverride !== undefined ? ' (caller override)' : ''}`)
 
