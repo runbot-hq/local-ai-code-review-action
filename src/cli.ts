@@ -12,6 +12,8 @@ export function localAiCli(bin: string, prompt: string, options?: {
   baseUrl?: string
   temperature?: number
   maximumResponseTokens?: number
+  numCtx?: number
+  repeatPenalty?: number
   timeoutSeconds?: number
   think?: boolean
 }): string {
@@ -23,11 +25,13 @@ export function localAiCli(bin: string, prompt: string, options?: {
   if (options?.baseUrl)      args.push('--base-url', options.baseUrl)
   if (options?.temperature !== undefined) args.push('--temperature', String(options.temperature))
   if (options?.maximumResponseTokens !== undefined) args.push('--maximum-response-tokens', String(options.maximumResponseTokens))
+  if (options?.numCtx !== undefined) args.push('--num-ctx', String(options.numCtx))
+  if (options?.repeatPenalty !== undefined) args.push('--repeat-penalty', String(options.repeatPenalty))
   args.push('--timeout', String(timeoutSeconds))
   args.push('--think', options?.think ? 'true' : 'false')
 
   core.info(`[cli] Invoking binary: ${bin}`)
-  core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} timeout=${timeoutSeconds}s think=${options?.think ?? false}`)
+  core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} num-ctx=${options?.numCtx} repeat-penalty=${options?.repeatPenalty} timeout=${timeoutSeconds}s think=${options?.think ?? false}`)
   if (core.isDebug()) {
     core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`)
   }
