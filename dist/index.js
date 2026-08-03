@@ -31027,6 +31027,7 @@ run();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.REVIEW_SCHEMA = void 0;
 exports.isParsedReview = isParsedReview;
+exports.getRealFiles = getRealFiles;
 exports.renderReviewMarkdown = renderReviewMarkdown;
 exports.REVIEW_SCHEMA = {
     type: 'object',
@@ -31077,6 +31078,13 @@ exports.REVIEW_SCHEMA = {
 // typeof-only check and rendered as a blank bullet
 // ("- Line 17: [suggestion] " with nothing after it). Trimming and checking
 // .length catches this.
+//
+// NOTE: filename is intentionally NOT checked for non-empty content here.
+// This function only validates the response is *structurally* safe to render
+// (i.e. won't crash or emit literal "undefined") — filtering out semantically
+// bogus entries (like a blank-filename file the model hallucinated to hold a
+// non-finding) is the job of getRealFiles() below, applied uniformly at every
+// call site instead of being baked into shape validation.
 function isParsedReview(value) {
     if (typeof value !== 'object' || value === null)
         return false;
@@ -31097,6 +31105,23 @@ function isParsedReview(value) {
         });
     });
 }
+// Filters out file entries with an empty/whitespace-only filename.
+//
+// Observed in production: the model can satisfy REVIEW_SCHEMA (filename is
+// only typed as `string`, not required to be non-empty) by emitting a file
+// entry with filename: "" whose "issues" list contains a non-finding dressed
+// up as a finding, e.g. { comment: "The diff contains no security issues." }.
+// This is the model's way of saying "nothing to report" for a category it
+// was asked to consider, but it is not a real per-file review result — left
+// unfiltered it renders as a redundant blank "### " block in the comment,
+// and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
+// on an otherwise all-clear PR (see index.ts noIssuesFound).
+//
+// Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
+// computation so the two can never disagree on what counts as a "real" file.
+function getRealFiles(review) {
+    return review.files.filter((f) => f.filename?.trim().length > 0);
+}
 // Mirrors the jq -r rendering block in review_commit_2.sh exactly:
 //   - empty files[] → "✅ No issues found in this PR."
 //   - per file: "### filename", then either "✅ No issues." (empty issues) or
@@ -31106,12 +31131,18 @@ function isParsedReview(value) {
 // even though isParsedReview should already have rejected them upstream —
 // this keeps renderReviewMarkdown safe to call directly (e.g. in tests)
 // without relying on the caller to have validated first.
+//
+// Blank-filename file entries are dropped via getRealFiles() before checking
+// review.files.length, so a response consisting entirely of hallucinated
+// blank-filename entries still renders the all-clear message rather than a
+// stray "### " block.
 function renderReviewMarkdown(review) {
-    if (review.files.length === 0) {
+    const realFiles = getRealFiles(review);
+    if (realFiles.length === 0) {
         return '✅ No issues found in this PR.';
     }
     const blocks = [];
-    for (const file of review.files) {
+    for (const file of realFiles) {
         const lines = [`### ${file.filename}`];
         const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0);
         if (issues.length === 0) {
