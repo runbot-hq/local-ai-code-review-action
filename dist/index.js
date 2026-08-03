@@ -31015,6 +31015,14 @@ exports.REVIEW_SCHEMA = {
 // a model emitting e.g. `{}` as an issue entry (structurally possible even
 // under structured-output enforcement of the outer shape) would render the
 // literal string "undefined" into the posted PR comment.
+//
+// IMPORTANT: `comment` must be checked for non-empty content, not just
+// typeof === 'string'. JSON Schema's `required` only guarantees the key is
+// present — it does NOT guarantee a non-empty value. A model can (and in
+// production did) satisfy the schema with `comment: ""`, which passed a
+// typeof-only check and rendered as a blank bullet
+// ("- Line 17: [suggestion] " with nothing after it). Trimming and checking
+// .length catches this.
 function isParsedReview(value) {
     if (typeof value !== 'object' || value === null)
         return false;
@@ -31030,7 +31038,8 @@ function isParsedReview(value) {
         return rec.issues.every((i) => {
             if (typeof i !== 'object' || i === null)
                 return false;
-            return typeof i.comment === 'string';
+            const comment = i.comment;
+            return typeof comment === 'string' && comment.trim().length > 0;
         });
     });
 }
@@ -31038,6 +31047,11 @@ function isParsedReview(value) {
 //   - empty files[] → "✅ No issues found in this PR."
 //   - per file: "### filename", then either "✅ No issues." (empty issues) or
 //     "- [Line N: ][severity] comment" per issue, followed by a blank line.
+//
+// Issues with an empty/whitespace-only comment are filtered out defensively
+// even though isParsedReview should already have rejected them upstream —
+// this keeps renderReviewMarkdown safe to call directly (e.g. in tests)
+// without relying on the caller to have validated first.
 function renderReviewMarkdown(review) {
     if (review.files.length === 0) {
         return '✅ No issues found in this PR.';
@@ -31045,11 +31059,12 @@ function renderReviewMarkdown(review) {
     const blocks = [];
     for (const file of review.files) {
         const lines = [`### ${file.filename}`];
-        if (file.issues.length === 0) {
+        const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0);
+        if (issues.length === 0) {
             lines.push('✅ No issues.');
         }
         else {
-            for (const issue of file.issues) {
+            for (const issue of issues) {
                 const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : '';
                 const severity = issue.severity ?? 'suggestion';
                 lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`);
