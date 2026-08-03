@@ -65,6 +65,14 @@ jobs:
 |---|---|
 | `review_body` | The full review comment posted to the PR |
 
+## Structured output
+
+The model does not generate Markdown directly. Instead, the action sends a JSON Schema to Ollama via [`local-ai-cli`](https://github.com/runbot-hq/local-ai-cli)'s `--format` flag (see `src/review.ts`), which constrains the model's output to a fixed shape: a list of files, each with a list of `{ line, severity, comment }` issues. The action then renders that JSON into the Markdown comment itself.
+
+This is deliberately more reliable than instructing the model to produce Markdown directly — a JSON Schema constrains token sampling structurally, so the model can't drift into changelog-style summaries or prose the way free-form formatting instructions alone allowed. If the model ever returns JSON that doesn't match the expected shape, the action falls back to posting the raw text with a `⚠️` warning prefix rather than failing the run.
+
+This is not configurable via an input — it's always on. There's no separate "schema" input because the schema is action-owned, not caller-owned; `local-ai-cli` forwards it opaquely and has no knowledge of code review at all.
+
 ## Skipping a review
 
 Add `[skip ai review]` anywhere in your **PR title**, **PR body**, or **commit message** to skip the review for that trigger.
