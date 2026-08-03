@@ -66,6 +66,14 @@ export interface ParsedReview {
 // a model emitting e.g. `{}` as an issue entry (structurally possible even
 // under structured-output enforcement of the outer shape) would render the
 // literal string "undefined" into the posted PR comment.
+//
+// IMPORTANT: `comment` must be checked for non-empty content, not just
+// typeof === 'string'. JSON Schema's `required` only guarantees the key is
+// present — it does NOT guarantee a non-empty value. A model can (and in
+// production did) satisfy the schema with `comment: ""`, which passed a
+// typeof-only check and rendered as a blank bullet
+// ("- Line 17: [suggestion] " with nothing after it). Trimming and checking
+// .length catches this.
 export function isParsedReview(value: unknown): value is ParsedReview {
   if (typeof value !== 'object' || value === null) return false
   const files = (value as Record<string, unknown>).files
@@ -76,7 +84,8 @@ export function isParsedReview(value: unknown): value is ParsedReview {
     if (typeof rec.filename !== 'string' || !Array.isArray(rec.issues)) return false
     return (rec.issues as unknown[]).every((i) => {
       if (typeof i !== 'object' || i === null) return false
-      return typeof (i as Record<string, unknown>).comment === 'string'
+      const comment = (i as Record<string, unknown>).comment
+      return typeof comment === 'string' && comment.trim().length > 0
     })
   })
 }
@@ -85,6 +94,11 @@ export function isParsedReview(value: unknown): value is ParsedReview {
 //   - empty files[] → "✅ No issues found in this PR."
 //   - per file: "### filename", then either "✅ No issues." (empty issues) or
 //     "- [Line N: ][severity] comment" per issue, followed by a blank line.
+//
+// Issues with an empty/whitespace-only comment are filtered out defensively
+// even though isParsedReview should already have rejected them upstream —
+// this keeps renderReviewMarkdown safe to call directly (e.g. in tests)
+// without relying on the caller to have validated first.
 export function renderReviewMarkdown(review: ParsedReview): string {
   if (review.files.length === 0) {
     return '✅ No issues found in this PR.'
@@ -93,10 +107,11 @@ export function renderReviewMarkdown(review: ParsedReview): string {
   const blocks: string[] = []
   for (const file of review.files) {
     const lines: string[] = [`### ${file.filename}`]
-    if (file.issues.length === 0) {
+    const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0)
+    if (issues.length === 0) {
       lines.push('✅ No issues.')
     } else {
-      for (const issue of file.issues) {
+      for (const issue of issues) {
         const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : ''
         const severity = issue.severity ?? 'suggestion'
         lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`)
