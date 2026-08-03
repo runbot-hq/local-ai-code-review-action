@@ -57,6 +57,7 @@ jobs:
 | `prompt_extra` | *(none)* | Extra instructions appended to the review prompt (max 300 chars) |
 | `replace_existing_comment` | `false` | When `false` (default), each review run appends a new comment — full review history is preserved. When `true`, the previous bot comment is deleted before posting a new one (single living comment per PR). |
 | `skip_review_label` | `[skip ai review]` | If this string is found in the PR title, PR body, or head commit message, the review is skipped entirely. See [Skipping a review](#skipping-a-review). |
+| `skip_comment_if_no_issues` | `true` | When `true` (default), no PR comment is posted if the review comes back all-clear (zero issues across every reviewed file) — reduces noise on clean PRs that get pushed to repeatedly. `review_body`/`review_file` outputs and the job summary are still populated regardless. Set to `false` to always post a comment, including all-clear reviews. If `replace_existing_comment` is also `true`, prior bot comments are still cleaned up so a now-fixed PR doesn't keep showing a stale issues comment. |
 | `debug` | `false` | Enable debug logging |
 
 ## Outputs
@@ -101,6 +102,22 @@ To use a custom flag instead of the default, set the `skip_review_label` input i
   with:
     skip_review_label: '[no review]'
 ```
+
+## Suppressing all-clear comments
+
+By default (`skip_comment_if_no_issues: true`), the action does **not** post a PR comment when the review finds zero issues across every reviewed file. This keeps clean PRs quiet, especially with `replace_existing_comment: false` (the default), where repeated pushes would otherwise stack up multiple all-clear comments.
+
+Set `skip_comment_if_no_issues: false` if you'd rather always see a comment, including all-clear reviews (useful as positive confirmation the action actually ran):
+
+```yaml
+- uses: runbot-hq/local-ai-code-review-action@v1
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  with:
+    skip_comment_if_no_issues: 'false'
+```
+
+The `review_body`/`review_file` outputs and job summary are populated either way, so downstream steps that key off them are unaffected — only the PR comment itself is suppressed.
 
 ## Requirements
 
