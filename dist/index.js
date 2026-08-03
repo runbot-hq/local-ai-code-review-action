@@ -30102,10 +30102,16 @@ function localAiCli(bin, prompt, options) {
         args.push('--num-ctx', String(options.numCtx));
     if (options?.repeatPenalty !== undefined)
         args.push('--repeat-penalty', String(options.repeatPenalty));
+    // format is a pre-serialized JSON string (either '"json"'-style bare word
+    // or a full JSON Schema object string) — passed through opaquely to
+    // local-ai-cli's --format flag, which itself passes it through opaquely to
+    // Ollama. This action owns the schema; local-ai-cli owns nothing about it.
+    if (options?.format !== undefined)
+        args.push('--format', options.format);
     args.push('--timeout', String(timeoutSeconds));
     args.push('--think', options?.think ? 'true' : 'false');
     core.info(`[cli] Invoking binary: ${bin}`);
-    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} num-ctx=${options?.numCtx} repeat-penalty=${options?.repeatPenalty} timeout=${timeoutSeconds}s think=${options?.think ?? false}`);
+    core.info(`[cli] Args (excl prompt/instructions): model=${options?.model} base-url=${options?.baseUrl} temperature=${options?.temperature} max-tokens=${options?.maximumResponseTokens} num-ctx=${options?.numCtx} repeat-penalty=${options?.repeatPenalty} format=${options?.format !== undefined ? 'set' : 'unset'} timeout=${timeoutSeconds}s think=${options?.think ?? false}`);
     if (core.isDebug()) {
         core.debug(`[cli] Full spawnSync args: ${args.map(a => JSON.stringify(a)).join(' ')}`);
     }
