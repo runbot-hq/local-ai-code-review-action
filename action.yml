@@ -51,9 +51,9 @@ inputs:
     required: false
     default: '[skip ai review]'
   skip_comment_if_no_issues:
-    description: 'When true, no PR comment is posted if the model reports zero issues across every reviewed file. The review_body/review_file outputs and job summary are still populated with the all-clear result — only the createComment call (and, if replace_existing_comment is true, cleanup of prior bot comments) is skipped. Default false preserves the original behavior of always posting, including all-clear reviews.'
+    description: 'When true (default), no PR comment is posted if the model reports zero issues across every reviewed file — reduces noise on clean PRs that get pushed to repeatedly. The review_body/review_file outputs and job summary are still populated with the all-clear result regardless — only the createComment call (and, if replace_existing_comment is true, cleanup of prior bot comments) is skipped. Set to false to always post a comment, including all-clear reviews.'
     required: false
-    default: 'false'
+    default: 'true'
   debug:
     description: 'Enable debug logging'
     required: false
