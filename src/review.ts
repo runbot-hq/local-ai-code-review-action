@@ -58,6 +58,14 @@ export interface ParsedReview {
 // constrains the model's token sampling to match REVIEW_SCHEMA; this is a
 // defensive check against a model that technically emits valid JSON but not
 // the expected shape, e.g. an empty object `{}`).
+//
+// Issue entries are validated down to `comment` specifically because it is
+// the only field marked `required` in REVIEW_SCHEMA's `issues.items` — line
+// and severity are optional and already have `??` fallbacks in
+// renderReviewMarkdown, but comment has no such fallback. Without this check,
+// a model emitting e.g. `{}` as an issue entry (structurally possible even
+// under structured-output enforcement of the outer shape) would render the
+// literal string "undefined" into the posted PR comment.
 export function isParsedReview(value: unknown): value is ParsedReview {
   if (typeof value !== 'object' || value === null) return false
   const files = (value as Record<string, unknown>).files
@@ -65,7 +73,11 @@ export function isParsedReview(value: unknown): value is ParsedReview {
   return files.every((f) => {
     if (typeof f !== 'object' || f === null) return false
     const rec = f as Record<string, unknown>
-    return typeof rec.filename === 'string' && Array.isArray(rec.issues)
+    if (typeof rec.filename !== 'string' || !Array.isArray(rec.issues)) return false
+    return (rec.issues as unknown[]).every((i) => {
+      if (typeof i !== 'object' || i === null) return false
+      return typeof (i as Record<string, unknown>).comment === 'string'
+    })
   })
 }
 
