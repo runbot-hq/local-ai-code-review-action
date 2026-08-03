@@ -30866,18 +30866,28 @@ async function run() {
         // text with a warning prefix rather than failing the whole run: the
         // reviewer still gets *something* to look at.
         //
-        // noIssuesFound tracks whether every reviewed file came back with an empty
-        // issues list, used below by skip_comment_if_no_issues. It stays false on
-        // the fallback (raw-text) path — an unparseable response is not the same
-        // as a confirmed all-clear, so it must still be posted for visibility.
+        // noIssuesFound tracks whether every *real* reviewed file (per
+        // getRealFiles, which drops hallucinated blank-filename entries — see
+        // review.ts) came back with an empty issues list, used below by
+        // skip_comment_if_no_issues. It stays false on the fallback (raw-text)
+        // path — an unparseable response is not the same as a confirmed
+        // all-clear, so it must still be posted for visibility.
+        //
+        // Computed over getRealFiles(parsed) rather than parsed.files directly so
+        // this can never disagree with what renderReviewMarkdown actually rendered
+        // — a model that hallucinates a blank-filename entry with a spurious
+        // non-empty issues list (observed in production, e.g. a fake "issue"
+        // like "The diff contains no security issues") must not defeat suppression
+        // for an otherwise genuinely all-clear PR.
         //
         // NOTE: Array.prototype.every() is vacuously true on an empty array, so
-        // noIssuesFound is also true when the model returns { files: [] }. This is
-        // intentional — the prompt explicitly instructs the model to return an
-        // empty files list "if the entire diff has no issues at all" — but it is a
-        // semantically distinct case from "reviewed N files and all came back
-        // clean". The log line below distinguishes the two so CI logs don't
-        // silently conflate them.
+        // noIssuesFound is also true when getRealFiles(parsed) is empty (whether
+        // because the model returned { files: [] } outright, or every entry was a
+        // hallucinated blank-filename one). This is intentional — the prompt
+        // explicitly instructs the model to return an empty files list "if the
+        // entire diff has no issues at all" — but it is a semantically distinct
+        // case from "reviewed N real files and all came back clean". The log line
+        // below distinguishes the two so CI logs don't silently conflate them.
         let review;
         let noIssuesFound = false;
         try {
@@ -30886,10 +30896,11 @@ async function run() {
                 throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)');
             }
             review = (0, review_1.renderReviewMarkdown)(parsed);
-            noIssuesFound = parsed.files.every((f) => f.issues.length === 0);
-            const emptyFilesList = parsed.files.length === 0;
-            core.info(`[step 4/5] Rendered ${parsed.files.length} file section(s) from structured output`);
-            core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned an empty files list, not per-file empty issue lists)' : ''}`);
+            const realFiles = (0, review_1.getRealFiles)(parsed);
+            noIssuesFound = realFiles.every((f) => f.issues.length === 0);
+            const emptyFilesList = realFiles.length === 0;
+            core.info(`[step 4/5] Rendered ${realFiles.length} file section(s) from structured output (${parsed.files.length - realFiles.length} hallucinated blank-filename entr${parsed.files.length - realFiles.length === 1 ? 'y' : 'ies'} dropped)`);
+            core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned no real per-file entries)' : ''}`);
         }
         catch (e) {
             core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`);
