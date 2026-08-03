@@ -50,6 +50,9 @@ jobs:
 | `base_url` | `http://localhost:11434` | Ollama base URL |
 | `temperature` | `0.2` | Sampling temperature (0.0–1.0) |
 | `maximum_response_tokens` | `4096` / `8192` | Max tokens to generate. Automatically set by review tier: `4096` for shallow (< 150 reviewable lines), `8192` for deep. Override by setting this input explicitly. |
+| `num_ctx` | `16384` | Ollama context window size in tokens (prompt + response). An undersized value can silently truncate large diffs, which can cause the model to hallucinate content not present in the input. |
+| `repeat_penalty` | `1.2` | Penalizes recently-used tokens to discourage repetition loops (commonly 1.0–1.3). Testing showed `qwen3.5:9b` can get stuck repeating a block verbatim without this. |
+| `think` | `false` | Override for Qwen/Ollama "thinking" mode. `false` (default) always disables thinking regardless of tier. Set to `true` to restore the dynamic tier-based behavior (deep reviews attempt thinking with automatic fallback to non-think on empty-response exhaustion). |
 | `timeout_seconds` | `600` | URLRequest timeout in seconds. Increase for large or slow models. |
 | `prompt_extra` | *(none)* | Extra instructions appended to the review prompt (max 300 chars) |
 | `replace_existing_comment` | `false` | When `false` (default), each review run appends a new comment — full review history is preserved. When `true`, the previous bot comment is deleted before posting a new one (single living comment per PR). |
