@@ -67,6 +67,24 @@ async function run(): Promise<void> {
     if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
     const promptExtra    = promptExtraRaw.slice(0, 300)
 
+    // === num_ctx ===
+    // Ollama context window size in tokens (prompt + response). Testing showed
+    // Ollama's own default context size can silently truncate large diffs,
+    // which can cause the model to hallucinate content that was never in the
+    // input. 16384 comfortably covers MAX_PATCH_CHARS (60000 chars, ~15000
+    // tokens, see step 7 below) plus response headroom. Passed straight
+    // through to local-ai-cli's --num-ctx flag.
+    const numCtx = parseInt(core.getInput('num_ctx') || '16384', 10)
+    core.info(`[init] num_ctx: ${numCtx}`)
+
+    // === repeat_penalty ===
+    // Penalizes recently-used tokens to discourage repetition loops. Testing
+    // showed qwen3.5:9b can get stuck repeating a block verbatim 25+ times
+    // without this; 1.2 eliminated the loop across multiple temperature
+    // settings. Passed straight through to local-ai-cli's --repeat-penalty flag.
+    const repeatPenalty = parseFloat(core.getInput('repeat_penalty') || '1.2')
+    core.info(`[init] repeat_penalty: ${repeatPenalty}`)
+
     // === think ===
     // Override for Qwen/Ollama "thinking" mode. This is NOT the tier-based
     // dynamic default — it is a hard override switch on top of it.
@@ -224,8 +242,8 @@ async function run(): Promise<void> {
     // 6. Select review tier based on reviewable lines
     // Tier drives both the dynamic think-mode default and the
     // maximum_response_tokens default.
-    // shallow: < 150 reviewable lines — think=false, max_tokens=4096
-    // deep:   ≥ 150 reviewable lines — think=true,  max_tokens=8192
+    // shallow: < 150 reviewable lines — think=false (always), max_tokens=4096
+    // deep:   ≥ 150 reviewable lines — think=thinkOverride,   max_tokens=8192
     // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
     // small enough that extended thinking adds latency without improving output.
     //
@@ -311,8 +329,8 @@ async function run(): Promise<void> {
 
     // Pass empty string for instructions so the binary does not also forward
     // them as a system prompt — they are already embedded in the user prompt above.
-    core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think})...`)
-    const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, timeoutSeconds, think }
+    core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`)
+    const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, numCtx, repeatPenalty, timeoutSeconds, think }
     let review = ''
     try {
       review = localAiCli(bin, prompt, cliOpts)

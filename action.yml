@@ -22,6 +22,14 @@ inputs:
   maximum_response_tokens:
     description: 'Max tokens in model response. When not set, the action automatically selects 4096 for shallow reviews (< 150 reviewable lines) or 8192 for deep reviews. Set explicitly to override.'
     required: false
+  num_ctx:
+    description: 'Ollama context window size in tokens (prompt + response). Testing showed the default context size can silently truncate large diffs, causing the model to hallucinate content not present in the input. Default 16384 comfortably covers this action'"'"'s MAX_PATCH_CHARS (60000 chars, ~15000 tokens) plus response headroom.'
+    required: false
+    default: '16384'
+  repeat_penalty:
+    description: 'Ollama repeat_penalty (typically 1.0-1.3). Penalizes recently-used tokens to discourage repetition loops. Testing showed qwen3.5:9b can get stuck repeating a block verbatim without this; 1.2 eliminated the loop across multiple temperature settings.'
+    required: false
+    default: '1.2'
   think:
     description: 'Override for Qwen/Ollama "thinking" mode. Default false — always disables thinking, regardless of tier. Set to true to restore the dynamic tier-based behavior (deep reviews attempt thinking, with automatic fallback to non-think on empty-response exhaustion; shallow reviews stay non-think). Testing showed think mode can exhaust the token budget with no output on some hardware — true may perform better on faster hardware.'
     required: false
