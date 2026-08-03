@@ -30527,6 +30527,7 @@ const tier_1 = __nccwpck_require__(4851);
 const binary_1 = __nccwpck_require__(9482);
 const cli_1 = __nccwpck_require__(5581);
 const github_1 = __nccwpck_require__(9248);
+const review_1 = __nccwpck_require__(7491);
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -30785,22 +30786,19 @@ async function run() {
         // workaround and ensures the model always receives them.
         //
         // Reference: https://github.com/ollama/ollama/issues (system prompt ignored for Qwen)
+        //
+        // NOTE: output is now enforced via Ollama's structured-output `format`
+        // field (REVIEW_SCHEMA, passed below), not by these instructions. The
+        // instructions therefore only need to cover WHAT to review, not HOW to
+        // format the output — the schema already guarantees valid JSON shape, so
+        // there is no need for a Markdown-formatting few-shot example or explicit
+        // "no prose" rules anymore.
         const instructions = [
             'You are a senior software engineer performing a concise, constructive code review.',
-            'Focus on: bugs, security issues, best practices, performance, and code clarity.',
-            'Use Markdown. Group feedback by filename using ### headers.',
-            'Use bullet points for individual issues. Be specific — reference line numbers where possible.',
-            'Do NOT summarise what the code does. Do NOT praise. Do NOT write a changelog or description of changes.',
-            'Only output ### filename headers followed by bullet-point issues. No prose paragraphs. No introduction. No conclusion.',
-            'If a file has no issues, write exactly: "✅ No issues." under its ### header.',
-            'If the entire diff has no issues, output only: "✅ No issues found in this PR." and stop.',
-            '',
-            'EXAMPLE OUTPUT:',
-            '### src/Cache.swift',
-            '- Line 23: Force-unwrap `data!` will crash if the response is nil. Use `guard let` or optional binding.',
-            '- Line 67: `cache` is mutated from multiple threads without synchronization — wrap in an actor or use a lock.',
-            '### src/Theme.swift',
-            '✅ No issues.',
+            'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
+            'Report concrete, specific issues only — do not summarise or describe what the diff does, and do not praise the code.',
+            'For each changed file, list its issues. If a file has no issues, give it an empty issues list.',
+            'If the entire diff has no issues at all, return an empty files list.',
         ].join('\n');
         const prompt = [
             instructions,
@@ -30813,13 +30811,20 @@ async function run() {
             // workflow inputs and to keep the prompt size predictable across tiers.
             ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
         ].join('\n');
+        // format: passed as a JSON-encoded schema string through local-ai-cli's
+        // --format flag, which forwards it opaquely to Ollama's structured-output
+        // feature. This constrains the model's token sampling to REVIEW_SCHEMA's
+        // shape, which is a much stronger anti-drift guarantee than prompt
+        // instructions alone — the model cannot emit a changelog/summary if the
+        // schema doesn't have a field for one.
+        const format = JSON.stringify(review_1.REVIEW_SCHEMA);
         // Pass empty string for instructions so the binary does not also forward
         // them as a system prompt — they are already embedded in the user prompt above.
         core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`);
-        const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, numCtx, repeatPenalty, timeoutSeconds, think };
-        let review = '';
+        const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, numCtx, repeatPenalty, format, timeoutSeconds, think };
+        let rawReview = '';
         try {
-            review = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
+            rawReview = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
         }
         catch (e) {
             core.warning(`[step 4/5] Attempt 1 failed: ${String(e)}`);
@@ -30827,18 +30832,38 @@ async function run() {
                 throw e;
             if ((0, cli_1.isEmptyThinkExhaust)(e, think)) {
                 core.warning('[step 4/5] think=true produced empty response — retrying with think=false');
-                review = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
+                rawReview = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
             }
             else {
                 core.info('[step 4/5] Retrying in 15s (cold-start model load)...');
                 await new Promise(r => setTimeout(r, 15000));
                 core.info('[step 4/5] Attempt 2...');
-                review = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
+                rawReview = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
             }
         }
-        if (!review)
+        if (!rawReview)
             throw new Error('local-ai-cli returned empty output');
-        core.info(`[step 4/5] Review complete (${review.length} chars)`);
+        core.info(`[step 4/5] Review complete (${rawReview.length} chars)`);
+        // Parse the structured JSON response and render it to Markdown ourselves —
+        // this action owns all output formatting now, not the model. If parsing
+        // or shape-validation fails despite the schema (should be rare — Ollama's
+        // structured-output feature constrains sampling — but a model could still
+        // emit e.g. `{}` instead of `{"files":[]}`), fall back to posting the raw
+        // text with a warning prefix rather than failing the whole run: the
+        // reviewer still gets *something* to look at.
+        let review;
+        try {
+            const parsed = JSON.parse(rawReview);
+            if (!(0, review_1.isParsedReview)(parsed)) {
+                throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)');
+            }
+            review = (0, review_1.renderReviewMarkdown)(parsed);
+            core.info(`[step 4/5] Rendered ${parsed.files.length} file section(s) from structured output`);
+        }
+        catch (e) {
+            core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`);
+            review = `> ⚠️ Model did not return valid structured output — showing raw response.\n\n${rawReview}`;
+        }
         // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
         core.info(`[step 5/5] review body length: ${review.length} chars`);
@@ -30926,6 +30951,100 @@ async function run() {
     }
 }
 run();
+
+
+/***/ }),
+
+/***/ 7491:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+// Structured-output schema and rendering for AI code reviews.
+//
+// The model returns JSON matching REVIEW_SCHEMA (enforced by Ollama's
+// structured-output feature via local-ai-cli's --format flag) instead of
+// directly emitting Markdown. This action owns all Markdown formatting —
+// the model's only job is to fill in file/issue data, which is far harder
+// to drift away from into changelog/summary prose than free-form Markdown
+// generation is.
+//
+// Ported from review_commit_2.sh's FORMAT=json jq schema + jq -r renderer.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.REVIEW_SCHEMA = void 0;
+exports.isParsedReview = isParsedReview;
+exports.renderReviewMarkdown = renderReviewMarkdown;
+exports.REVIEW_SCHEMA = {
+    type: 'object',
+    properties: {
+        files: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    filename: { type: 'string' },
+                    issues: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                line: { type: 'integer' },
+                                severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
+                                comment: { type: 'string' },
+                            },
+                            required: ['comment'],
+                        },
+                    },
+                },
+                required: ['filename', 'issues'],
+            },
+        },
+    },
+    required: ['files'],
+};
+// Type-guards the shape just enough to render safely — does not do full
+// JSON Schema validation (Ollama's structured-output feature already
+// constrains the model's token sampling to match REVIEW_SCHEMA; this is a
+// defensive check against a model that technically emits valid JSON but not
+// the expected shape, e.g. an empty object `{}`).
+function isParsedReview(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const files = value.files;
+    if (!Array.isArray(files))
+        return false;
+    return files.every((f) => {
+        if (typeof f !== 'object' || f === null)
+            return false;
+        const rec = f;
+        return typeof rec.filename === 'string' && Array.isArray(rec.issues);
+    });
+}
+// Mirrors the jq -r rendering block in review_commit_2.sh exactly:
+//   - empty files[] → "✅ No issues found in this PR."
+//   - per file: "### filename", then either "✅ No issues." (empty issues) or
+//     "- [Line N: ][severity] comment" per issue, followed by a blank line.
+function renderReviewMarkdown(review) {
+    if (review.files.length === 0) {
+        return '✅ No issues found in this PR.';
+    }
+    const blocks = [];
+    for (const file of review.files) {
+        const lines = [`### ${file.filename}`];
+        if (file.issues.length === 0) {
+            lines.push('✅ No issues.');
+        }
+        else {
+            for (const issue of file.issues) {
+                const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : '';
+                const severity = issue.severity ?? 'suggestion';
+                lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`);
+            }
+        }
+        blocks.push(lines.join('\n'));
+    }
+    return blocks.join('\n\n');
+}
 
 
 /***/ }),
