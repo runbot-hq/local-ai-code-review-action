@@ -23,7 +23,7 @@ inputs:
     description: 'Max tokens in model response. When not set, the action automatically selects 4096 for shallow reviews (< 150 reviewable lines) or 8192 for deep reviews. Set explicitly to override.'
     required: false
   num_ctx:
-    description: 'Ollama context window size in tokens (prompt + response). Testing showed the default context size can silently truncate large diffs, causing the model to hallucinate content not present in the input. Default 16384 comfortably covers this action'"'"'s MAX_PATCH_CHARS (60000 chars, ~15000 tokens) plus response headroom.'
+    description: 'Ollama context window size in tokens (prompt + response). Testing showed the default context size can silently truncate large diffs, causing the model to hallucinate content not present in the input. Default 16384 comfortably covers this action''s MAX_PATCH_CHARS (60000 chars, ~15000 tokens) plus response headroom.'
     required: false
     default: '16384'
   repeat_penalty:
