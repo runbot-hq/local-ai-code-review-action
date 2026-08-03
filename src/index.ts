@@ -8,6 +8,7 @@ import { selectTier } from './tier'
 import { ensureBinary } from './binary'
 import { localAiCli, isFatalError, isEmptyThinkExhaust } from './cli'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
+import { REVIEW_SCHEMA, isParsedReview, renderReviewMarkdown } from './review'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -297,22 +298,19 @@ async function run(): Promise<void> {
     // workaround and ensures the model always receives them.
     //
     // Reference: https://github.com/ollama/ollama/issues (system prompt ignored for Qwen)
+    //
+    // NOTE: output is now enforced via Ollama's structured-output `format`
+    // field (REVIEW_SCHEMA, passed below), not by these instructions. The
+    // instructions therefore only need to cover WHAT to review, not HOW to
+    // format the output — the schema already guarantees valid JSON shape, so
+    // there is no need for a Markdown-formatting few-shot example or explicit
+    // "no prose" rules anymore.
     const instructions = [
       'You are a senior software engineer performing a concise, constructive code review.',
-      'Focus on: bugs, security issues, best practices, performance, and code clarity.',
-      'Use Markdown. Group feedback by filename using ### headers.',
-      'Use bullet points for individual issues. Be specific — reference line numbers where possible.',
-      'Do NOT summarise what the code does. Do NOT praise. Do NOT write a changelog or description of changes.',
-      'Only output ### filename headers followed by bullet-point issues. No prose paragraphs. No introduction. No conclusion.',
-      'If a file has no issues, write exactly: "✅ No issues." under its ### header.',
-      'If the entire diff has no issues, output only: "✅ No issues found in this PR." and stop.',
-      '',
-      'EXAMPLE OUTPUT:',
-      '### src/Cache.swift',
-      '- Line 23: Force-unwrap `data!` will crash if the response is nil. Use `guard let` or optional binding.',
-      '- Line 67: `cache` is mutated from multiple threads without synchronization — wrap in an actor or use a lock.',
-      '### src/Theme.swift',
-      '✅ No issues.',
+      'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
+      'Report concrete, specific issues only — do not summarise or describe what the diff does, and do not praise the code.',
+      'For each changed file, list its issues. If a file has no issues, give it an empty issues list.',
+      'If the entire diff has no issues at all, return an empty files list.',
     ].join('\n')
 
     const prompt = [
@@ -327,29 +325,57 @@ async function run(): Promise<void> {
       ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
     ].join('\n')
 
+    // format: passed as a JSON-encoded schema string through local-ai-cli's
+    // --format flag, which forwards it opaquely to Ollama's structured-output
+    // feature. This constrains the model's token sampling to REVIEW_SCHEMA's
+    // shape, which is a much stronger anti-drift guarantee than prompt
+    // instructions alone — the model cannot emit a changelog/summary if the
+    // schema doesn't have a field for one.
+    const format = JSON.stringify(REVIEW_SCHEMA)
+
     // Pass empty string for instructions so the binary does not also forward
     // them as a system prompt — they are already embedded in the user prompt above.
     core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`)
-    const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, numCtx, repeatPenalty, timeoutSeconds, think }
-    let review = ''
+    const cliOpts = { instructions: '', model, baseUrl, temperature, maximumResponseTokens, numCtx, repeatPenalty, format, timeoutSeconds, think }
+    let rawReview = ''
     try {
-      review = localAiCli(bin, prompt, cliOpts)
+      rawReview = localAiCli(bin, prompt, cliOpts)
     } catch (e) {
       core.warning(`[step 4/5] Attempt 1 failed: ${String(e)}`)
       if (isFatalError(e)) throw e
       if (isEmptyThinkExhaust(e, think)) {
         core.warning('[step 4/5] think=true produced empty response — retrying with think=false')
-        review = localAiCli(bin, prompt, { ...cliOpts, think: false })
+        rawReview = localAiCli(bin, prompt, { ...cliOpts, think: false })
       } else {
         core.info('[step 4/5] Retrying in 15s (cold-start model load)...')
         await new Promise(r => setTimeout(r, 15_000))
         core.info('[step 4/5] Attempt 2...')
-        review = localAiCli(bin, prompt, cliOpts)
+        rawReview = localAiCli(bin, prompt, cliOpts)
       }
     }
 
-    if (!review) throw new Error('local-ai-cli returned empty output')
-    core.info(`[step 4/5] Review complete (${review.length} chars)`)
+    if (!rawReview) throw new Error('local-ai-cli returned empty output')
+    core.info(`[step 4/5] Review complete (${rawReview.length} chars)`)
+
+    // Parse the structured JSON response and render it to Markdown ourselves —
+    // this action owns all output formatting now, not the model. If parsing
+    // or shape-validation fails despite the schema (should be rare — Ollama's
+    // structured-output feature constrains sampling — but a model could still
+    // emit e.g. `{}` instead of `{"files":[]}`), fall back to posting the raw
+    // text with a warning prefix rather than failing the whole run: the
+    // reviewer still gets *something* to look at.
+    let review: string
+    try {
+      const parsed = JSON.parse(rawReview)
+      if (!isParsedReview(parsed)) {
+        throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)')
+      }
+      review = renderReviewMarkdown(parsed)
+      core.info(`[step 4/5] Rendered ${parsed.files.length} file section(s) from structured output`)
+    } catch (e) {
+      core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`)
+      review = `> ⚠️ Model did not return valid structured output — showing raw response.\n\n${rawReview}`
+    }
 
     // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
     core.info('[step 5/5] Posting PR comment...')
