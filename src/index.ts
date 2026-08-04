@@ -275,22 +275,29 @@ async function run(): Promise<void> {
     // 7. Build diff block
     core.info('[step 3/5] Building diff block...')
     const MAX_PATCH_CHARS = 60_000
-    let diffBlock = ''
-    let truncated = false
 
-    for (const f of files) {
-      if (!f.patch) {
-        core.info(`  skip ${f.filename} — no patch`)
-        continue
+    function buildDiffBlock(
+      maxChars: number
+    ): { diffBlock: string; truncated: boolean } {
+      let diffBlock = ''
+      let truncated = false
+      for (const f of files) {
+        if (!f.patch) {
+          core.info(`  skip ${f.filename} — no patch`)
+          continue
+        }
+        const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`
+        if ((diffBlock + chunk).length > maxChars) {
+          truncated = true
+          core.warning(`[step 3/5] Diff truncated at ${maxChars} chars — stopping at ${f.filename}`)
+          break
+        }
+        diffBlock += chunk
       }
-      const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`
-      if ((diffBlock + chunk).length > MAX_PATCH_CHARS) {
-        truncated = true
-        core.warning(`[step 3/5] Diff truncated at ${MAX_PATCH_CHARS} chars — stopping at ${f.filename}`)
-        break
-      }
-      diffBlock += chunk
+      return { diffBlock, truncated }
     }
+
+    let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS)
     core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`)
 
     if (!diffBlock) {
@@ -362,10 +369,43 @@ async function run(): Promise<void> {
         core.warning('[step 4/5] think=true produced empty response — retrying with think=false')
         rawReview = localAiCli(bin, prompt, { ...cliOpts, think: false })
       } else {
-        core.info('[step 4/5] Retrying in 15s (cold-start model load)...')
+        // Degraded retry: use at most 50% of the attempt-1 diff characters
+        // (complete file chunks only, no mid-patch slicing) and 50% of the
+        // output-token budget. The timeout is preserved unchanged.
+        const retryDiffLimit = Math.floor(diffBlock.length / 2)
+        const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock
+
+        const usedFullDiffFallback = reducedRetryDiff.length === 0
+        const retryDiffBlock = usedFullDiffFallback
+          ? diffBlock
+          : reducedRetryDiff
+
+        const retryMaxTokens = Math.floor(maximumResponseTokens / 2)
+
+        if (usedFullDiffFallback) {
+          core.warning(
+            `[step 4/5] No complete file fits within the ${retryDiffLimit}-character ` +
+            `retry budget — retaining the full diff and reducing output tokens only.`
+          )
+        }
+
+        const retryPrompt = prompt.replace(diffBlock, () => retryDiffBlock)
+
+        core.info(
+          `[step 4/5] Retrying in 15s (cold-start) with degraded budget ` +
+          `(diff: ${retryDiffBlock.length}/${diffBlock.length} chars, ` +
+          `max_tokens: ${retryMaxTokens}, ` +
+          `full_diff_fallback: ${usedFullDiffFallback})...`
+        )
+
         await new Promise(r => setTimeout(r, 15_000))
-        core.info('[step 4/5] Attempt 2...')
-        rawReview = localAiCli(bin, prompt, cliOpts)
+
+        core.info('[step 4/5] Attempt 2 (degraded)...')
+
+        rawReview = localAiCli(bin, retryPrompt, {
+          ...cliOpts,
+          maximumResponseTokens: retryMaxTokens,
+        })
       }
     }
 
