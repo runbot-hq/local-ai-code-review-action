@@ -373,24 +373,38 @@ async function run(): Promise<void> {
         // (complete file chunks only, no mid-patch slicing) and 50% of the
         // output-token budget. The timeout is preserved unchanged.
         const retryDiffLimit = Math.floor(diffBlock.length / 2)
-        const retryDiff = buildDiffBlock(retryDiffLimit)
-        if (!retryDiff.diffBlock) {
-          throw new Error(
-            `Unable to build retry diff within ${retryDiffLimit} characters — ` +
-            `no complete file chunk fits in the reduced budget.`
+        const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock
+
+        const usedFullDiffFallback = reducedRetryDiff.length === 0
+        const retryDiffBlock = usedFullDiffFallback
+          ? diffBlock
+          : reducedRetryDiff
+
+        const retryMaxTokens = Math.floor(maximumResponseTokens / 2)
+
+        if (usedFullDiffFallback) {
+          core.warning(
+            `[step 4/5] No complete file fits within the ${retryDiffLimit}-character ` +
+            `retry budget — retaining the full diff and reducing output tokens only.`
           )
         }
-        const retryPrompt = prompt.replace(diffBlock, retryDiff.diffBlock)
+
+        const retryPrompt = prompt.replace(diffBlock, retryDiffBlock)
+
         core.info(
           `[step 4/5] Retrying in 15s (cold-start) with degraded budget ` +
-          `(diff: ${retryDiff.diffBlock.length}/${diffBlock.length} chars, ` +
-          `max_tokens: ${Math.floor(maximumResponseTokens / 2)})...`
+          `(diff: ${retryDiffBlock.length}/${diffBlock.length} chars, ` +
+          `max_tokens: ${retryMaxTokens}, ` +
+          `full_diff_fallback: ${usedFullDiffFallback})...`
         )
+
         await new Promise(r => setTimeout(r, 15_000))
+
         core.info('[step 4/5] Attempt 2 (degraded)...')
+
         rawReview = localAiCli(bin, retryPrompt, {
           ...cliOpts,
-          maximumResponseTokens: Math.floor(maximumResponseTokens / 2),
+          maximumResponseTokens: retryMaxTokens,
         })
       }
     }
