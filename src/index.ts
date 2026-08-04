@@ -389,7 +389,7 @@ async function run(): Promise<void> {
           )
         }
 
-        const retryPrompt = prompt.replace(diffBlock, retryDiffBlock)
+        const retryPrompt = prompt.replace(diffBlock, () => retryDiffBlock)
 
         core.info(
           `[step 4/5] Retrying in 15s (cold-start) with degraded budget ` +

@@ -30867,7 +30867,7 @@ async function run() {
                     core.warning(`[step 4/5] No complete file fits within the ${retryDiffLimit}-character ` +
                         `retry budget — retaining the full diff and reducing output tokens only.`);
                 }
-                const retryPrompt = prompt.replace(diffBlock, retryDiffBlock);
+                const retryPrompt = prompt.replace(diffBlock, () => retryDiffBlock);
                 core.info(`[step 4/5] Retrying in 15s (cold-start) with degraded budget ` +
                     `(diff: ${retryDiffBlock.length}/${diffBlock.length} chars, ` +
                     `max_tokens: ${retryMaxTokens}, ` +
