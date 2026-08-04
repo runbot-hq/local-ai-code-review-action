@@ -30765,21 +30765,25 @@ async function run() {
         // 7. Build diff block
         core.info('[step 3/5] Building diff block...');
         const MAX_PATCH_CHARS = 60000;
-        let diffBlock = '';
-        let truncated = false;
-        for (const f of files) {
-            if (!f.patch) {
-                core.info(`  skip ${f.filename} — no patch`);
-                continue;
+        function buildDiffBlock(maxChars) {
+            let diffBlock = '';
+            let truncated = false;
+            for (const f of files) {
+                if (!f.patch) {
+                    core.info(`  skip ${f.filename} — no patch`);
+                    continue;
+                }
+                const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`;
+                if ((diffBlock + chunk).length > maxChars) {
+                    truncated = true;
+                    core.warning(`[step 3/5] Diff truncated at ${maxChars} chars — stopping at ${f.filename}`);
+                    break;
+                }
+                diffBlock += chunk;
             }
-            const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`;
-            if ((diffBlock + chunk).length > MAX_PATCH_CHARS) {
-                truncated = true;
-                core.warning(`[step 3/5] Diff truncated at ${MAX_PATCH_CHARS} chars — stopping at ${f.filename}`);
-                break;
-            }
-            diffBlock += chunk;
+            return { diffBlock, truncated };
         }
+        let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS);
         core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`);
         if (!diffBlock) {
             core.info('[step 3/5] No patchable diff content — skipping review.');
@@ -30849,10 +30853,25 @@ async function run() {
                 rawReview = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
             }
             else {
-                core.info('[step 4/5] Retrying in 15s (cold-start model load)...');
+                // Degraded retry: use at most 50% of the attempt-1 diff characters
+                // (complete file chunks only, no mid-patch slicing) and 50% of the
+                // output-token budget. The timeout is preserved unchanged.
+                const retryDiffLimit = Math.floor(diffBlock.length / 2);
+                const retryDiff = buildDiffBlock(retryDiffLimit);
+                if (!retryDiff.diffBlock) {
+                    throw new Error(`Unable to build retry diff within ${retryDiffLimit} characters — ` +
+                        `no complete file chunk fits in the reduced budget.`);
+                }
+                const retryPrompt = prompt.replace(diffBlock, retryDiff.diffBlock);
+                core.info(`[step 4/5] Retrying in 15s (cold-start) with degraded budget ` +
+                    `(diff: ${retryDiff.diffBlock.length}/${diffBlock.length} chars, ` +
+                    `max_tokens: ${Math.floor(maximumResponseTokens / 2)})...`);
                 await new Promise(r => setTimeout(r, 15000));
-                core.info('[step 4/5] Attempt 2...');
-                rawReview = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
+                core.info('[step 4/5] Attempt 2 (degraded)...');
+                rawReview = (0, cli_1.localAiCli)(bin, retryPrompt, {
+                    ...cliOpts,
+                    maximumResponseTokens: Math.floor(maximumResponseTokens / 2),
+                });
             }
         }
         if (!rawReview)
