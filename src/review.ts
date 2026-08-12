@@ -25,7 +25,7 @@ export const REVIEW_SCHEMA = {
               properties: {
                 line: { type: 'integer' },
                 severity: { type: 'string', enum: ['critical', 'warning', 'suggestion'] },
-                comment: { type: 'string' },
+                comment: { type: 'string', minLength: 1 },
               },
               required: ['comment'],
             },
