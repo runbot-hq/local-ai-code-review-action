@@ -51,11 +51,35 @@ export async function runReviewInference(
   // Build diff block
   core.info('[step 3/5] Building diff block...')
   const MAX_PATCH_CHARS = 60_000
-  let { diffBlock, truncated, includedFileCount } = buildDiffBlock(files, MAX_PATCH_CHARS)
-  core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`)
+  const initialDiff = buildDiffBlock(files, MAX_PATCH_CHARS)
+
+  let {
+    diffBlock,
+    truncated,
+    truncatedAt,
+    includedFileCount,
+    skippedFiles,
+  } = initialDiff
+
+  for (const filename of skippedFiles) {
+    core.info(`  skip ${filename} — no patch`)
+  }
+
+  if (truncated && truncatedAt) {
+    core.warning(
+      `[step 3/5] Diff truncated at ` +
+      `${MAX_PATCH_CHARS} chars — ` +
+      `stopping at ${truncatedAt}`
+    )
+  }
+
+  core.info(
+    `[step 3/5] Diff block: ` +
+    `${diffBlock.length} chars, ` +
+    `truncated=${truncated}`
+  )
 
   if (!diffBlock) {
-    // Caller will check for empty markdown and short-circuit
     return {
       valid: false,
       raw: '',
@@ -71,7 +95,6 @@ export async function runReviewInference(
     diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`
   }
 
-  // Build prompt
   const instructions = [
     'You are a senior software engineer performing a concise, constructive code review.',
     'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
@@ -119,11 +142,20 @@ export async function runReviewInference(
       core.warning('[step 4/5] think=true produced empty response — retrying with think=false')
       rawReview = localAiCli(bin, prompt, { ...cliOpts, think: false })
     } else {
-      // Degraded retry: use at most 50% of the attempt-1 diff characters
-      // (complete file chunks only, no mid-patch slicing) and 50% of the
-      // output-token budget. The timeout is preserved unchanged.
       const retryDiffLimit = Math.floor(diffBlock.length / 2)
       const reducedRetry = buildDiffBlock(files, retryDiffLimit)
+
+      for (const filename of reducedRetry.skippedFiles) {
+        core.info(`  skip ${filename} — no patch`)
+      }
+
+      if (reducedRetry.truncated && reducedRetry.truncatedAt) {
+        core.warning(
+          `[step 3/5] Diff truncated at ` +
+          `${retryDiffLimit} chars — ` +
+          `stopping at ${reducedRetry.truncatedAt}`
+        )
+      }
 
       const usedFullDiffFallback = reducedRetry.diffBlock.length === 0
       const retryDiffBlock = usedFullDiffFallback ? diffBlock : reducedRetry.diffBlock
@@ -161,7 +193,6 @@ export async function runReviewInference(
   if (!rawReview) throw new Error('local-ai-cli returned empty output')
   core.info(`[step 4/5] Review complete (${rawReview.length} chars)`)
 
-  // Parse structured JSON and render
   try {
     const parsed = JSON.parse(rawReview)
     if (!isParsedReview(parsed)) {
