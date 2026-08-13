@@ -465,7 +465,13 @@ async function run(): Promise<void> {
       const realFiles = getRealFiles(parsed)
       noIssuesFound = realFiles.every((f) => f.issues.length === 0)
       const emptyFilesList = realFiles.length === 0
-      core.info(`[step 4/5] Rendered ${realFiles.length} file section(s) from structured output (${parsed.files.length - realFiles.length} hallucinated blank-filename entr${parsed.files.length - realFiles.length === 1 ? 'y' : 'ies'} dropped)`)
+      const normalizedEntryCount = parsed.files.length - realFiles.length
+      core.info(
+        `[step 4/5] Rendered ${realFiles.length} file section(s) ` +
+        `from structured output ` +
+        `(${normalizedEntryCount} blank or duplicate file ` +
+        `entr${normalizedEntryCount === 1 ? 'y' : 'ies'} normalized)`
+      )
       core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned no real per-file entries)' : ''}`)
     } catch (e) {
       core.warning(
