@@ -30768,6 +30768,7 @@ async function run() {
         function buildDiffBlock(maxChars) {
             let diffBlock = '';
             let truncated = false;
+            let includedFileCount = 0;
             for (const f of files) {
                 if (!f.patch) {
                     core.info(`  skip ${f.filename} — no patch`);
@@ -30780,10 +30781,11 @@ async function run() {
                     break;
                 }
                 diffBlock += chunk;
+                includedFileCount += 1;
             }
-            return { diffBlock, truncated };
+            return { diffBlock, truncated, includedFileCount };
         }
-        let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS);
+        let { diffBlock, truncated, includedFileCount } = buildDiffBlock(MAX_PATCH_CHARS);
         core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`);
         if (!diffBlock) {
             core.info('[step 3/5] No patchable diff content — skipping review.');
@@ -30835,7 +30837,7 @@ async function run() {
         // shape, which is a much stronger anti-drift guarantee than prompt
         // instructions alone — the model cannot emit a changelog/summary if the
         // schema doesn't have a field for one.
-        const format = JSON.stringify(review_1.REVIEW_SCHEMA);
+        const format = JSON.stringify((0, review_1.buildReviewSchema)(includedFileCount));
         // Pass empty string for instructions so the binary does not also forward
         // them as a system prompt — they are already embedded in the user prompt above.
         core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`);
@@ -30857,11 +30859,14 @@ async function run() {
                 // (complete file chunks only, no mid-patch slicing) and 50% of the
                 // output-token budget. The timeout is preserved unchanged.
                 const retryDiffLimit = Math.floor(diffBlock.length / 2);
-                const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock;
-                const usedFullDiffFallback = reducedRetryDiff.length === 0;
+                const reducedRetry = buildDiffBlock(retryDiffLimit);
+                const usedFullDiffFallback = reducedRetry.diffBlock.length === 0;
                 const retryDiffBlock = usedFullDiffFallback
                     ? diffBlock
-                    : reducedRetryDiff;
+                    : reducedRetry.diffBlock;
+                const retryFileCount = usedFullDiffFallback
+                    ? includedFileCount
+                    : reducedRetry.includedFileCount;
                 const retryMaxTokens = Math.floor(maximumResponseTokens / 2);
                 if (usedFullDiffFallback) {
                     core.warning(`[step 4/5] No complete file fits within the ${retryDiffLimit}-character ` +
@@ -30876,6 +30881,7 @@ async function run() {
                 core.info('[step 4/5] Attempt 2 (degraded)...');
                 rawReview = (0, cli_1.localAiCli)(bin, retryPrompt, {
                     ...cliOpts,
+                    format: JSON.stringify((0, review_1.buildReviewSchema)(retryFileCount)),
                     maximumResponseTokens: retryMaxTokens,
                 });
             }
@@ -31063,6 +31069,7 @@ run();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.REVIEW_SCHEMA = void 0;
 exports.isParsedReview = isParsedReview;
+exports.buildReviewSchema = buildReviewSchema;
 exports.getRealFiles = getRealFiles;
 exports.renderReviewMarkdown = renderReviewMarkdown;
 exports.REVIEW_SCHEMA = {
@@ -31155,6 +31162,26 @@ function isParsedReview(value) {
 //
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
+// Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
+// Used to bound the top-level files[] array to the number of complete file
+// chunks included in the prompt, preventing the model from emitting the same
+// valid file object repeatedly until the response reaches the output-token
+// limit and becomes truncated JSON.
+//
+// Do not mutate the exported REVIEW_SCHEMA constant — always construct a new
+// object so callers that read REVIEW_SCHEMA directly are unaffected.
+function buildReviewSchema(maxFiles) {
+    return {
+        ...exports.REVIEW_SCHEMA,
+        properties: {
+            ...exports.REVIEW_SCHEMA.properties,
+            files: {
+                ...exports.REVIEW_SCHEMA.properties.files,
+                maxItems: maxFiles,
+            },
+        },
+    };
+}
 function getRealFiles(review) {
     return review.files.filter((f) => f.filename?.trim().length > 0);
 }
