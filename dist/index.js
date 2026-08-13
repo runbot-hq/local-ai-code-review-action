@@ -30528,6 +30528,7 @@ const binary_1 = __nccwpck_require__(9482);
 const cli_1 = __nccwpck_require__(5581);
 const github_1 = __nccwpck_require__(9248);
 const review_1 = __nccwpck_require__(7491);
+const scope_1 = __nccwpck_require__(7311);
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -30723,9 +30724,7 @@ async function run() {
         const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         const eventAction = github.context.payload.action;
-        const reviewScope = eventAction === 'synchronize'
-            ? 'head-commit'
-            : 'pull-request';
+        const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction);
         let files;
         if (reviewScope === 'head-commit') {
             files = (headCommit.files ?? []).map((file) => ({
@@ -31298,6 +31297,20 @@ function renderReviewMarkdown(review) {
         blocks.push(lines.join('\n'));
     }
     return blocks.join('\n\n');
+}
+
+
+/***/ }),
+
+/***/ 7311:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.reviewScopeForAction = reviewScopeForAction;
+function reviewScopeForAction(eventAction) {
+    return eventAction === 'synchronize' ? 'head-commit' : 'pull-request';
 }
 
 
