@@ -12,7 +12,37 @@ import { test } from 'node:test'
 import { buildReviewSchema } from './review'
 import { reviewScopeForAction } from './scope'
 
-const reviewScope = reviewScopeForAction
+// ---------------------------------------------------------------------------
+// Scope decision tests (dynamic + override)
+// ---------------------------------------------------------------------------
+
+test('dynamic: opened uses pull-request', () => {
+  assert.equal(reviewScopeForAction('opened', false), 'pull-request')
+})
+
+test('dynamic: reopened uses pull-request', () => {
+  assert.equal(reviewScopeForAction('reopened', false), 'pull-request')
+})
+
+test('dynamic: synchronize uses head-commit', () => {
+  assert.equal(reviewScopeForAction('synchronize', false), 'head-commit')
+})
+
+test('override: opened uses pull-request', () => {
+  assert.equal(reviewScopeForAction('opened', true), 'pull-request')
+})
+
+test('override: reopened uses pull-request', () => {
+  assert.equal(reviewScopeForAction('reopened', true), 'pull-request')
+})
+
+test('override: synchronize uses pull-request', () => {
+  assert.equal(reviewScopeForAction('synchronize', true), 'pull-request')
+})
+
+test('omitted override defaults to dynamic', () => {
+  assert.equal(reviewScopeForAction('synchronize'), 'head-commit')
+})
 
 // ---------------------------------------------------------------------------
 // Pure buildDiffBlock re-implementation (mirrored from review.test.ts helper).
@@ -51,18 +81,6 @@ function buildDiffBlockPure(
 // Scope decision tests
 // ---------------------------------------------------------------------------
 
-test('opened -> pull-request scope', () => {
-  assert.equal(reviewScope('opened'), 'pull-request')
-})
-
-test('reopened -> pull-request scope', () => {
-  assert.equal(reviewScope('reopened'), 'pull-request')
-})
-
-test('synchronize -> head-commit scope', () => {
-  assert.equal(reviewScope('synchronize'), 'head-commit')
-})
-
 // ---------------------------------------------------------------------------
 // Regression test for commit 8dd2063
 //
@@ -86,7 +104,7 @@ const markdownKitFiles: PatchFile[] = [
 ]
 
 test('regression 8dd2063: synchronize selects only head-commit files (2)', () => {
-  const scope = reviewScope('synchronize')
+  const scope = reviewScopeForAction('synchronize')
   assert.equal(scope, 'head-commit')
 
   // For synchronize, files come from headCommit.files — not pulls.listFiles
@@ -111,7 +129,7 @@ test('regression 8dd2063: no MarkdownKit source file enters the head-commit diff
 })
 
 test('opened selects full PR file list (5 files in MarkdownKit scenario)', () => {
-  const scope = reviewScope('opened')
+  const scope = reviewScopeForAction('opened')
   assert.equal(scope, 'pull-request')
 
   const { includedFileCount } = buildDiffBlockPure(markdownKitFiles, 100_000)
@@ -119,7 +137,7 @@ test('opened selects full PR file list (5 files in MarkdownKit scenario)', () =>
 })
 
 test('reopened selects full PR file list (5 files in MarkdownKit scenario)', () => {
-  const scope = reviewScope('reopened')
+  const scope = reviewScopeForAction('reopened')
   assert.equal(scope, 'pull-request')
 
   const { includedFileCount } = buildDiffBlockPure(markdownKitFiles, 100_000)

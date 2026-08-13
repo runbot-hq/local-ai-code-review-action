@@ -244,8 +244,27 @@ async function run(): Promise<void> {
       patch?: string
     }
 
+    const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr')
+    if (
+      rawAlwaysReviewEntirePR &&
+      rawAlwaysReviewEntirePR !== 'true' &&
+      rawAlwaysReviewEntirePR !== 'false'
+    ) {
+      core.warning(
+        `[init] always_review_entire_pr: unrecognised value ` +
+        `"${rawAlwaysReviewEntirePR}" — treating as false. ` +
+        `Use 'true' or 'false'.`
+      )
+    }
+    const alwaysReviewEntirePR = rawAlwaysReviewEntirePR === 'true'
+
     const eventAction = github.context.payload.action
-    const reviewScope = reviewScopeForAction(eventAction)
+    const reviewScope = reviewScopeForAction(eventAction, alwaysReviewEntirePR)
+    core.info(
+      `[step 2/5] always_review_entire_pr=${alwaysReviewEntirePR}, ` +
+      `effective_scope=${reviewScope}, ` +
+      `action=${eventAction}`
+    )
 
     let files: ReviewFile[]
 

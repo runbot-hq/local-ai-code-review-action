@@ -58,6 +58,14 @@ inputs:
     description: 'Enable debug logging'
     required: false
     default: 'false'
+  always_review_entire_pr:
+    description: >
+      When true, always reviews the full pull request. When false
+      (default), review scope is dynamic: opened and reopened review
+      the full pull request, while synchronize reviews only the latest
+      head commit.
+    required: false
+    default: 'false'
 
 outputs:
   review_body:

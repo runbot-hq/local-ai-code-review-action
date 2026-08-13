@@ -59,6 +59,29 @@ jobs:
 | `skip_review_label` | `[skip ai review]` | If this string is found in the PR title, PR body, or head commit message, the review is skipped entirely. See [Skipping a review](#skipping-a-review). |
 | `skip_comment_if_no_issues` | `true` | When `true` (default), no PR comment is posted if the review comes back all-clear (zero issues across every reviewed file) — reduces noise on clean PRs that get pushed to repeatedly. `review_body`/`review_file` outputs and the job summary are still populated regardless. Set to `false` to always post a comment, including all-clear reviews. If `replace_existing_comment` is also `true`, prior bot comments are still cleaned up so a now-fixed PR doesn't keep showing a stale issues comment. |
 | `debug` | `false` | Enable debug logging |
+| `always_review_entire_pr` | `false` | When `false` (default), review scope is dynamic: opened/reopened reviews the full PR and synchronize reviews only the latest head commit. When `true`, every run reviews the full PR. |
+
+## Review scope
+
+By default, the action selects review scope dynamically:
+
+| Pull-request event | Reviewed changes |
+|---|---|
+| `opened` | Full pull request |
+| `reopened` | Full pull request |
+| `synchronize` | Latest head commit only |
+
+This keeps initial reviews comprehensive while follow-up reviews focus only on the newest commit.
+
+To use full-pull-request review behavior for every event:
+
+```yaml
+- uses: runbot-hq/local-ai-code-review-action@main
+  with:
+    always_review_entire_pr: 'true'
+```
+
+`always_review_entire_pr` defaults to `false`. Omitting it preserves dynamic review scope.
 
 ## Outputs
 
