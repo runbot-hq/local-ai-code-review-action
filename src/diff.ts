@@ -1,4 +1,7 @@
-export interface ReviewFile {
+// Represents a changed file as returned by the GitHub API (pulls.listFiles /
+// repos.getCommit). Named ChangedFile to avoid collision with the model-output
+// ReviewFile type in review.ts.
+export interface ChangedFile {
   filename: string
   status: string
   additions: number
@@ -15,7 +18,7 @@ export interface DiffResult {
 }
 
 export function buildDiffBlock(
-  files: ReviewFile[],
+  files: ChangedFile[],
   maxChars: number
 ): DiffResult {
   let diffBlock = ''

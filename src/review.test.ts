@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import { REVIEW_SCHEMA, buildReviewSchema, getRealFiles, renderReviewMarkdown } from './review'
 import type { ParsedReview, ReviewFile } from './review'
 import { buildDiffBlock } from './diff'
-import type { ReviewFile as DiffFile } from './diff'
+import type { ChangedFile } from './diff'
 
 test('buildReviewSchema sets files.maxItems to the supplied count', () => {
   const schema = buildReviewSchema(3)
@@ -65,7 +65,7 @@ test('two calls with different counts produce independent maxItems', () => {
 // ---------------------------------------------------------------------------
 
 test('files without a patch do not increase includedFileCount', () => {
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'a.ts', status: 'modified', additions: 0, deletions: 0, patch: undefined },
     { filename: 'b.ts', status: 'modified', additions: 0, deletions: 0, patch: undefined },
     { filename: 'c.ts', status: 'modified', additions: 0, deletions: 0, patch: 'console.log(1)' },
@@ -75,7 +75,7 @@ test('files without a patch do not increase includedFileCount', () => {
 })
 
 test('a file that exceeds maxChars does not increase includedFileCount', () => {
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'big.ts', status: 'modified', additions: 0, deletions: 0, patch: 'x'.repeat(500) },
   ]
   const { includedFileCount, truncated } = buildDiffBlock(files, 10)
@@ -84,7 +84,7 @@ test('a file that exceeds maxChars does not increase includedFileCount', () => {
 })
 
 test('three-file prompt produces includedFileCount of 3 (issue #68 scenario)', () => {
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let a = 1' },
     { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let b = 2' },
     { filename: 'C.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let c = 3' },
@@ -94,7 +94,7 @@ test('three-file prompt produces includedFileCount of 3 (issue #68 scenario)', (
 })
 
 test('initial format uses initial file count', () => {
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let a = 1' },
     { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let b = 2' },
   ]
@@ -105,7 +105,7 @@ test('initial format uses initial file count', () => {
 
 test('reduced retry uses reduced prompt file count', () => {
   const patch = '+let x = ' + 'y'.repeat(300)
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch },
     { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch },
     { filename: 'C.swift', status: 'modified', additions: 0, deletions: 0, patch },
@@ -125,7 +125,7 @@ test('reduced retry uses reduced prompt file count', () => {
 test('full-diff fallback uses original includedFileCount when reduced diff is empty', () => {
   // Simulate a single very large file: reduced limit = 0 files fit
   const patch = 'x'.repeat(1000)
-  const files: DiffFile[] = [
+  const files: ChangedFile[] = [
     { filename: 'Large.swift', status: 'modified', additions: 0, deletions: 0, patch },
   ]
   const initial = buildDiffBlock(files, 100_000)

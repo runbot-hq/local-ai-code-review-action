@@ -4,7 +4,7 @@ import { buildReviewSchema, isParsedReview, renderReviewMarkdown, getRealFiles }
 import { selectTier } from './tier'
 import { buildDiffBlock } from './diff'
 import type { ActionConfig } from './config'
-import type { ReviewFile } from './diff'
+import type { ChangedFile } from './diff'
 
 export type ReviewResult =
   | {
@@ -31,7 +31,7 @@ export type InferenceResult = ReviewResult & ReviewMetadata
 
 export interface RunInferenceOptions {
   bin: string
-  files: ReviewFile[]
+  files: ChangedFile[]
   prNumber: number
   prTitle: string
   config: ActionConfig

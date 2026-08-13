@@ -1,6 +1,6 @@
 import * as core from '@actions/core'
 import { readConfig } from './config'
-import { resolveReviewContext } from './review-context'
+import { resolveReviewContext, resolveReviewFiles } from './review-context'
 import { ensureBinary } from './binary'
 import { runReviewInference } from './inference'
 import { publishReview } from './posting'
@@ -24,20 +24,31 @@ async function run(): Promise<void> {
     core.info('=== local-ai-code-review-action starting ===')
 
     const config = readConfig()
-    const context = await resolveReviewContext(config)
+
+    // Phase 1: validate PR context, run skip-label checks, fetch head commit.
+    // Returns before binary is ensured so title/body skips never touch the binary.
+    const resolved = await resolveReviewContext(config)
+
+    if (resolved.skipReason) {
+      core.info(resolved.skipReason)
+      return
+    }
+
+    // ensureBinary() downloads or locates the local-ai-cli binary and returns
+    // its path. Placed here (after phase 1, before phase 2) to preserve the
+    // original step-1 / step-2 log ordering: binary readiness is established
+    // before scope resolution and file fetching begin.
+    core.info('[step 1/5] Ensuring local-ai-cli binary...')
+    const bin = await ensureBinary(config.token)
+    core.info(`[step 1/5] Binary ready: ${bin}`)
+
+    // Phase 2: resolve review scope, fetch changed files, emit step-2 logs.
+    const context = await resolveReviewFiles(resolved, config)
 
     if (context.skipReason) {
       core.info(context.skipReason)
       return
     }
-
-    // ensureBinary() downloads or locates the local-ai-cli binary and returns
-    // its path. The binary is committed as dist/index.js is NOT the entrypoint
-    // here — this action runs via a pre-built Node bundle (dist/index.js) which
-    // shells out to the local-ai-cli binary for inference.
-    core.info('[step 1/5] Ensuring local-ai-cli binary...')
-    const bin = await ensureBinary(config.token)
-    core.info(`[step 1/5] Binary ready: ${bin}`)
 
     const result = await runReviewInference({
       bin,
