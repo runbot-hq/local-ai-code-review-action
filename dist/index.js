@@ -30723,8 +30723,20 @@ async function run() {
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
+        const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr');
+        if (rawAlwaysReviewEntirePR &&
+            rawAlwaysReviewEntirePR !== 'true' &&
+            rawAlwaysReviewEntirePR !== 'false') {
+            core.warning(`[init] always_review_entire_pr: unrecognised value ` +
+                `"${rawAlwaysReviewEntirePR}" — treating as false. ` +
+                `Use 'true' or 'false'.`);
+        }
+        const alwaysReviewEntirePR = rawAlwaysReviewEntirePR === 'true';
         const eventAction = github.context.payload.action;
-        const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction);
+        const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction, alwaysReviewEntirePR);
+        core.info(`[step 2/5] always_review_entire_pr=${alwaysReviewEntirePR}, ` +
+            `effective_scope=${reviewScope}, ` +
+            `action=${eventAction}`);
         let files;
         if (reviewScope === 'head-commit') {
             files = (headCommit.files ?? []).map((file) => ({
@@ -31309,7 +31321,9 @@ function renderReviewMarkdown(review) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.reviewScopeForAction = reviewScopeForAction;
-function reviewScopeForAction(eventAction) {
+function reviewScopeForAction(eventAction, alwaysReviewEntirePR = false) {
+    if (alwaysReviewEntirePR)
+        return 'pull-request';
     return eventAction === 'synchronize' ? 'head-commit' : 'pull-request';
 }
 
