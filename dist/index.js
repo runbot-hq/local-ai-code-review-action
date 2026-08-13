@@ -30221,10 +30221,18 @@ function readConfig() {
     if (promptExtraRaw.length > 300)
         core.warning('[init] prompt_extra was truncated to 300 chars');
     const promptExtra = promptExtraRaw.slice(0, 300);
+    // num_ctx defaults to 16,384 — the context window that comfortably fits the
+    // 60,000-character diff budget plus prompt overhead without OOM-killing Ollama.
     const numCtx = parseInt(core.getInput('num_ctx') || '16384', 10);
     core.info(`[init] num_ctx: ${numCtx}`);
+    // repeat_penalty defaults to 1.2 — empirically chosen after observing the model
+    // enter repetition loops (repeating the same issue or phrase verbatim) at the
+    // default value of 1.0.
     const repeatPenalty = parseFloat(core.getInput('repeat_penalty') || '1.2');
     core.info(`[init] repeat_penalty: ${repeatPenalty}`);
+    // think interacts with tier selection: thinkOverride=true only activates the
+    // extended reasoning path when the tier resolved to 'deep'; shallow-tier runs
+    // always use think=false regardless of this input.
     const rawThink = core.getInput('think');
     if (rawThink && rawThink !== 'true' && rawThink !== 'false') {
         core.warning(`[init] think: unrecognised value "${rawThink}" — treating as false. Use 'true' or 'false'.`);
@@ -30237,12 +30245,18 @@ function readConfig() {
     }
     const replaceExistingComment = rawReplaceExistingComment === 'true';
     core.info(`[init] replace_existing_comment: ${replaceExistingComment}`);
+    // skip_comment_if_no_issues=true suppresses the PR comment but does not
+    // suppress action outputs or the job summary — callers still get the review
+    // body via outputs and the summary is always written for observability.
     const rawSkipCommentIfNoIssues = core.getInput('skip_comment_if_no_issues');
     if (rawSkipCommentIfNoIssues && rawSkipCommentIfNoIssues !== 'true' && rawSkipCommentIfNoIssues !== 'false') {
         core.warning(`[init] skip_comment_if_no_issues: unrecognised value "${rawSkipCommentIfNoIssues}" — treating as true (default). Use 'true' or 'false'.`);
     }
     const skipCommentIfNoIssues = rawSkipCommentIfNoIssues !== 'false';
     core.info(`[init] skip_comment_if_no_issues: ${skipCommentIfNoIssues}`);
+    // maximum_response_tokens has no fixed input default; callers supply undefined
+    // and inference applies tier defaults: 4,096 for shallow reviews and 8,192 for
+    // deep reviews.  An explicit input value overrides both tier defaults.
     const rawMaxTokens = core.getInput('maximum_response_tokens');
     const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined;
     const rawSkipLabel = core.getInput('skip_review_label');
@@ -30907,6 +30921,8 @@ async function runReviewInference(opts) {
     if (truncated) {
         diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`;
     }
+    // Instructions live in the user prompt rather than the system prompt because
+    // some Qwen/Ollama chat templates silently drop or truncate the system prompt.
     const instructions = [
         'You are a senior software engineer performing a concise, constructive code review.',
         'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
@@ -30923,6 +30939,8 @@ async function runReviewInference(opts) {
         diffBlock,
         ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
     ].join('\n');
+    // The JSON schema passed via `format` constrains the model to return valid
+    // structured output; without it, Ollama returns free-form text.
     const format = JSON.stringify((0, review_1.buildReviewSchema)(includedFileCount));
     core.info(`[step 4/5] Calling ${model} at ${baseUrl} ` +
         `(timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`);
@@ -30951,6 +30969,8 @@ async function runReviewInference(opts) {
             rawReview = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
         }
         else {
+            // Retry degradation: use complete file chunks (no mid-file cuts) up to
+            // half the original diff budget, and half the response-token budget.
             const retryDiffLimit = Math.floor(diffBlock.length / 2);
             const reducedRetry = (0, diff_1.buildDiffBlock)(files, retryDiffLimit);
             for (const filename of reducedRetry.skippedFiles) {
@@ -30992,6 +31012,8 @@ async function runReviewInference(opts) {
             throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)');
         }
         const markdown = (0, review_1.renderReviewMarkdown)(parsed);
+        // getRealFiles() filters out blank filenames and duplicate model entries
+        // before evaluating noIssuesFound, preventing false all-clears.
         const realFiles = (0, review_1.getRealFiles)(parsed);
         const noIssuesFound = realFiles.every((f) => f.issues.length === 0);
         const emptyFilesList = realFiles.length === 0;
@@ -31015,6 +31037,8 @@ async function runReviewInference(opts) {
         };
     }
     catch (e) {
+        // Invalid structured output is not equivalent to an all-clear result;
+        // valid:false signals callers to suppress comment creation/deletion.
         core.warning(`[step 4/5] Failed to parse/render structured JSON output — ` +
             `keeping raw response in logs and outputs only: ${String(e)}`);
         const markdown = `> ⚠️ Model did not return valid structured output — ` +
@@ -31091,6 +31115,8 @@ async function publishReview(opts) {
     core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
     (0, github_1.networkDiag)('pre-post');
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
+    // Invalid model output must never create or delete comments, but must still
+    // produce outputs and diagnostics so the failure is visible to callers.
     if (!result.valid) {
         core.warning('[step 5/5] Structured output invalid — ' +
             'skipping PR comment; preserving existing bot comments');
@@ -31099,6 +31125,8 @@ async function publishReview(opts) {
         result.noIssuesFound) {
         core.info('[step 5/5] skip_comment_if_no_issues=true and ' +
             'no issues found — skipping comment post');
+        // All-clear cleanup only applies when replacement mode is enabled; in
+        // append mode previous comments are left as-is.
         if (replaceExistingComment) {
             const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
             for (const id of existingIds) {
@@ -31118,6 +31146,9 @@ async function publishReview(opts) {
     else {
         if (replaceExistingComment) {
             const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
+            // Existing comments must be deleted before the new one is created.
+            // If deletion fails, withRetry will throw and the new comment will not
+            // be posted, preventing duplicate bot comments on the PR.
             for (const id of existingIds) {
                 core.info(`[step 5/5] deleting bot comment id=${id}...`);
                 await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({
@@ -31148,14 +31179,23 @@ async function publishReview(opts) {
     }
     core.setOutput('review_body', fullReview);
     try {
+        // RUNNER_TEMP is required for self-hosted runners; os.tmpdir() is used as a
+        // fallback for local runs.  The path must be job-scoped so the post script
+        // can locate the file after the main step completes.
         const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
+        // The review file must remain available for the post script, which runs
+        // after the main action step exits.
         const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
         fs.writeFileSync(reviewFile, fullReview, 'utf8');
         core.setOutput('review_file', reviewFile);
+        // core.saveState() is required because action outputs are not available
+        // to the post script; state is the only supported cross-step channel.
         core.saveState('review_file', reviewFile);
         core.info(`[step 5/5] Review file: ${reviewFile}`);
     }
     catch (e) {
+        // Review-file writing is best-effort; failure must not abort the completed
+        // review or prevent the job summary from being written.
         core.warning('[step 5/5] Could not write review file — ' +
             'review_file output will be absent: ' +
             String(e));
@@ -31230,6 +31270,8 @@ async function resolveReviewContext(config) {
     const pr = ctx.payload.pull_request;
     const prNumber = pr.number;
     const prTitle = pr.title ?? '';
+    // payload.head_commit is unavailable on pull_request events; the head SHA
+    // must be read from pr.head.sha instead.
     const headSha = pr.head.sha;
     const repo = process.env.GITHUB_REPOSITORY ?? '';
     const [owner, repoName] = repo.split('/');
@@ -31241,13 +31283,16 @@ async function resolveReviewContext(config) {
     const base = {
         token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
     };
-    // Skip-label check: title/body first (free), then head commit (API call)
+    // Title and body are checked before the API request; they are already present
+    // in the webhook payload so this costs nothing and avoids an unnecessary call.
     const prBody = pr.body ?? '';
     if (prTitle.toLowerCase().includes(config.skipLabel) ||
         prBody.toLowerCase().includes(config.skipLabel)) {
         return { ...base, files: [], skipReason: `[init] Skip label "${config.skipLabel}" detected in title/body — skipping AI review.` };
     }
     core.info(`[init] Fetching head commit message for skip check (sha: ${headSha})...`);
+    // The commit response is reused below for head-commit file selection, so we
+    // keep a reference to the full response data rather than discarding it.
     const commitResponse = await (0, github_1.withRetry)('fetch-head-commit', () => octokit.rest.repos.getCommit({ owner, repo: repoName, ref: headSha, per_page: 100 }));
     const headCommit = commitResponse.data;
     const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase();
@@ -31262,6 +31307,9 @@ async function resolveReviewContext(config) {
     core.info(`[step 2/5] always_review_entire_pr=${config.alwaysReviewEntirePR}, ` +
         `effective_scope=${reviewScope}, action=${eventAction}`);
     let files;
+    // synchronize uses head-commit files (already fetched above) so that only the
+    // files touched by the triggering push are reviewed.  All other supported
+    // actions (opened, reopened) use the full PR file list instead.
     if (reviewScope === 'head-commit') {
         files = (headCommit.files ?? []).map((f) => ({
             filename: f.filename,
