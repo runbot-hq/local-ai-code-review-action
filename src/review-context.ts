@@ -80,7 +80,7 @@ export async function resolveReviewContext(
   let files: ReviewFile[]
 
   if (reviewScope === 'head-commit') {
-    files = (headCommit.files ?? []).map((f: any) => ({
+    files = (headCommit.files ?? []).map((f) => ({
       filename: f.filename,
       status:   f.status,
       additions: f.additions,
