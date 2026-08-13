@@ -30724,14 +30724,13 @@ async function run() {
         const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr');
-        if (rawAlwaysReviewEntirePR &&
-            rawAlwaysReviewEntirePR !== 'true' &&
-            rawAlwaysReviewEntirePR !== 'false') {
+        const parsedAlwaysReviewEntirePR = (0, scope_1.parseAlwaysReviewEntirePR)(rawAlwaysReviewEntirePR);
+        if (parsedAlwaysReviewEntirePR === undefined) {
             core.warning(`[init] always_review_entire_pr: unrecognised value ` +
                 `"${rawAlwaysReviewEntirePR}" — treating as false. ` +
                 `Use 'true' or 'false'.`);
         }
-        const alwaysReviewEntirePR = rawAlwaysReviewEntirePR === 'true';
+        const alwaysReviewEntirePR = parsedAlwaysReviewEntirePR ?? false;
         const eventAction = github.context.payload.action;
         const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction, alwaysReviewEntirePR);
         core.info(`[step 2/5] always_review_entire_pr=${alwaysReviewEntirePR}, ` +
@@ -31321,10 +31320,19 @@ function renderReviewMarkdown(review) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.reviewScopeForAction = reviewScopeForAction;
+exports.parseAlwaysReviewEntirePR = parseAlwaysReviewEntirePR;
 function reviewScopeForAction(eventAction, alwaysReviewEntirePR = false) {
     if (alwaysReviewEntirePR)
         return 'pull-request';
     return eventAction === 'synchronize' ? 'head-commit' : 'pull-request';
+}
+function parseAlwaysReviewEntirePR(rawValue) {
+    const normalized = rawValue.trim().toLowerCase();
+    if (!normalized || normalized === 'false')
+        return false;
+    if (normalized === 'true')
+        return true;
+    return undefined;
 }
 
 
