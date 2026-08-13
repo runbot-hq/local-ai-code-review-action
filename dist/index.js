@@ -30704,6 +30704,7 @@ async function run() {
             owner,
             repo: repoName,
             ref: pr.head.sha,
+            per_page: 100,
         }));
         const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase();
         core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`);
@@ -30721,21 +30722,39 @@ async function run() {
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await (0, binary_1.ensureBinary)(token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
-        // 5. Fetch PR files
-        // NOTE: pulls.listFiles is intentionally capped at per_page: 100 and not
-        // paginated. The GitHub API hard-limit for this endpoint is also 3000 files,
-        // but in practice PRs with >100 changed files produce diffs that far exceed
-        // the MAX_PATCH_CHARS budget anyway. The files.length === 100 warning below
-        // surfaces the truncation in CI logs. Paginating here would add complexity
-        // without meaningfully improving review quality for such large PRs.
-        core.info('[step 2/5] Fetching PR changed files...');
-        const { data: files } = await octokit.rest.pulls.listFiles({
-            owner,
-            repo: repoName,
-            pull_number: prNumber,
-            per_page: 100,
-        });
-        core.info(`[step 2/5] Files changed: ${files.length}`);
+        const eventAction = github.context.payload.action;
+        const reviewScope = eventAction === 'synchronize'
+            ? 'head-commit'
+            : 'pull-request';
+        let files;
+        if (reviewScope === 'head-commit') {
+            files = (headCommit.files ?? []).map((file) => ({
+                filename: file.filename,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                patch: file.patch,
+            }));
+            core.info(`[step 2/5] Review scope: head commit ${pr.head.sha} ` +
+                `(${files.length} file(s))`);
+        }
+        else {
+            const prResponse = await (0, github_1.withRetry)('fetch-pr-files', () => octokit.rest.pulls.listFiles({
+                owner,
+                repo: repoName,
+                pull_number: prNumber,
+                per_page: 100,
+            }));
+            files = prResponse.data.map((file) => ({
+                filename: file.filename,
+                status: file.status,
+                additions: file.additions,
+                deletions: file.deletions,
+                patch: file.patch,
+            }));
+            core.info(`[step 2/5] Review scope: full PR #${prNumber} ` +
+                `(${files.length} file(s), action=${eventAction})`);
+        }
         for (const f of files) {
             core.info(`  • ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`);
         }
@@ -30744,7 +30763,7 @@ async function run() {
             return;
         }
         if (files.length === 100) {
-            core.warning('[step 2/5] 100 files returned — list may be truncated by GitHub API.');
+            core.warning(`[step 2/5] ${reviewScope} file list reached the 100-file cap`);
         }
         // 6. Select review tier based on reviewable lines
         // Tier drives both the dynamic think-mode default and the
