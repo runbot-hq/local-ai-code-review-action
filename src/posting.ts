@@ -6,10 +6,10 @@ import { BOT_SIGNATURE } from './constants'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
 import type { ActionConfig } from './config'
 import type { ReviewContext } from './review-context'
-import type { ReviewResult } from './inference'
+import type { InferenceResult } from './inference'
 
 export interface PublishReviewOptions {
-  result: ReviewResult & { tier: string; reviewableLines: number; truncated: boolean; filesReviewed: number }
+  result: InferenceResult
   context: ReviewContext
   config: ActionConfig
 }

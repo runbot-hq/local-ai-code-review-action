@@ -31,6 +31,10 @@ async function run(): Promise<void> {
       return
     }
 
+    // ensureBinary() downloads or locates the local-ai-cli binary and returns
+    // its path. The binary is committed as dist/index.js is NOT the entrypoint
+    // here — this action runs via a pre-built Node bundle (dist/index.js) which
+    // shells out to the local-ai-cli binary for inference.
     core.info('[step 1/5] Ensuring local-ai-cli binary...')
     const bin = await ensureBinary(config.token)
     core.info(`[step 1/5] Binary ready: ${bin}`)
@@ -43,7 +47,14 @@ async function run(): Promise<void> {
       config,
     })
 
-    if (!result.markdown) {
+    // Use the explicit discriminant rather than proxying on result.markdown;
+    // the renderer produces non-empty Markdown even for all-clear responses
+    // so !result.markdown would silently bypass outputs and the job summary
+    // if the renderer ever changes.
+    if (
+      !result.valid &&
+      result.error === 'no-diff'
+    ) {
       core.info('[step 3/5] No patchable diff content — skipping review.')
       return
     }

@@ -21,6 +21,14 @@ export type ReviewResult =
       error: string
     }
 
+export interface ReviewMetadata {
+  tier: string
+  reviewableLines: number
+  truncated: boolean
+}
+
+export type InferenceResult = ReviewResult & ReviewMetadata
+
 export interface RunInferenceOptions {
   bin: string
   files: ReviewFile[]
@@ -31,7 +39,7 @@ export interface RunInferenceOptions {
 
 export async function runReviewInference(
   opts: RunInferenceOptions
-): Promise<ReviewResult & { tier: string; reviewableLines: number; truncated: boolean; filesReviewed: number }> {
+): Promise<InferenceResult> {
   const { bin, files, prNumber, prTitle, config } = opts
   const {
     model, baseUrl, temperature, timeoutSeconds,
@@ -88,7 +96,6 @@ export async function runReviewInference(
       tier,
       reviewableLines,
       truncated,
-      filesReviewed: includedFileCount,
     }
   }
   if (truncated) {
@@ -230,7 +237,6 @@ export async function runReviewInference(
       tier,
       reviewableLines,
       truncated,
-      filesReviewed: includedFileCount,
     }
   } catch (e) {
     // Invalid structured output is not equivalent to an all-clear result;
@@ -250,7 +256,6 @@ export async function runReviewInference(
       tier,
       reviewableLines,
       truncated,
-      filesReviewed: includedFileCount,
     }
   }
 }

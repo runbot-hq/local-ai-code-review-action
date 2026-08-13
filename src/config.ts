@@ -21,6 +21,13 @@ export interface ActionConfig {
 }
 
 export function readConfig(): ActionConfig {
+  // Emit diagnostics before the token check so they appear in the log even
+  // when GITHUB_TOKEN is absent — otherwise the throw swallows all context.
+  core.info(`[init] Node version: ${process.version}`)
+  core.info(`[init] Platform: ${process.platform} ${process.arch}`)
+  core.info(`[init] HOME: ${os.homedir()}`)
+  core.info(`[init] Runner: ${process.env.RUNNER_NAME ?? 'unknown'}`)
+
   if (core.getInput('debug') === 'true') process.env.ACTIONS_STEP_DEBUG = '1'
 
   const token = process.env.GITHUB_TOKEN
@@ -28,10 +35,6 @@ export function readConfig(): ActionConfig {
     'GITHUB_TOKEN is not set — add `env: GITHUB_TOKEN: ${{ github.token }}` to your workflow step.'
   )
   core.info('[init] GITHUB_TOKEN: present')
-  core.info(`[init] Node version: ${process.version}`)
-  core.info(`[init] Platform: ${process.platform} ${process.arch}`)
-  core.info(`[init] HOME: ${os.homedir()}`)
-  core.info(`[init] Runner: ${process.env.RUNNER_NAME ?? 'unknown'}`)
 
   const model          = core.getInput('model')     || 'qwen3.5:9b'
   const baseUrl        = core.getInput('base_url')  || 'http://localhost:11434'
