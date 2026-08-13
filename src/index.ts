@@ -9,7 +9,7 @@ import { ensureBinary } from './binary'
 import { localAiCli, isFatalError, isEmptyThinkExhaust } from './cli'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
 import { buildReviewSchema, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
-import { reviewScopeForAction } from './scope'
+import { reviewScopeForAction, parseAlwaysReviewEntirePR } from './scope'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -245,18 +245,15 @@ async function run(): Promise<void> {
     }
 
     const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr')
-    if (
-      rawAlwaysReviewEntirePR &&
-      rawAlwaysReviewEntirePR !== 'true' &&
-      rawAlwaysReviewEntirePR !== 'false'
-    ) {
+    const parsedAlwaysReviewEntirePR = parseAlwaysReviewEntirePR(rawAlwaysReviewEntirePR)
+    if (parsedAlwaysReviewEntirePR === undefined) {
       core.warning(
         `[init] always_review_entire_pr: unrecognised value ` +
         `"${rawAlwaysReviewEntirePR}" — treating as false. ` +
         `Use 'true' or 'false'.`
       )
     }
-    const alwaysReviewEntirePR = rawAlwaysReviewEntirePR === 'true'
+    const alwaysReviewEntirePR = parsedAlwaysReviewEntirePR ?? false
 
     const eventAction = github.context.payload.action
     const reviewScope = reviewScopeForAction(eventAction, alwaysReviewEntirePR)

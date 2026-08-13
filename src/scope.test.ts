@@ -10,7 +10,43 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { buildReviewSchema } from './review'
-import { reviewScopeForAction } from './scope'
+import { reviewScopeForAction, parseAlwaysReviewEntirePR } from './scope'
+
+// ---------------------------------------------------------------------------
+// parseAlwaysReviewEntirePR
+// ---------------------------------------------------------------------------
+
+test('parseAlwaysReviewEntirePR: empty string -> false', () => {
+  assert.equal(parseAlwaysReviewEntirePR(''), false)
+})
+
+test('parseAlwaysReviewEntirePR: "false" -> false', () => {
+  assert.equal(parseAlwaysReviewEntirePR('false'), false)
+})
+
+test('parseAlwaysReviewEntirePR: "False" -> false', () => {
+  assert.equal(parseAlwaysReviewEntirePR('False'), false)
+})
+
+test('parseAlwaysReviewEntirePR: "FALSE" -> false', () => {
+  assert.equal(parseAlwaysReviewEntirePR('FALSE'), false)
+})
+
+test('parseAlwaysReviewEntirePR: "true" -> true', () => {
+  assert.equal(parseAlwaysReviewEntirePR('true'), true)
+})
+
+test('parseAlwaysReviewEntirePR: "True" -> true', () => {
+  assert.equal(parseAlwaysReviewEntirePR('True'), true)
+})
+
+test('parseAlwaysReviewEntirePR: "TRUE" -> true', () => {
+  assert.equal(parseAlwaysReviewEntirePR('TRUE'), true)
+})
+
+test('parseAlwaysReviewEntirePR: invalid -> undefined', () => {
+  assert.equal(parseAlwaysReviewEntirePR('invalid'), undefined)
+})
 
 // ---------------------------------------------------------------------------
 // Scope decision tests (dynamic + override)

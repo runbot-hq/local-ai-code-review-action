@@ -81,6 +81,11 @@ To use full-pull-request review behavior for every event:
     always_review_entire_pr: 'true'
 ```
 
+On `synchronize`, only the latest head commit is reviewed. If one push
+contains multiple commits, earlier commits in that push are not reviewed
+separately. Set `always_review_entire_pr: 'true'` to review the complete
+pull request on every run.
+
 `always_review_entire_pr` defaults to `false`. Omitting it preserves dynamic review scope.
 
 ## Outputs
