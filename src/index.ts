@@ -560,7 +560,7 @@ async function run(): Promise<void> {
       }
 
       core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`)
-      const {  comment } = await withRetry('create-comment', () =>
+      const { data: comment } = await withRetry('create-comment', () =>
         octokit.rest.issues.createComment({
           owner,
           repo: repoName,
