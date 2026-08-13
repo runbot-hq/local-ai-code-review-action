@@ -135,3 +135,41 @@ export function buildReviewSchema(maxFiles: number) {
 export function getRealFiles(review: ParsedReview): ReviewFile[] {
   return review.files.filter((f) => f.filename?.trim().length > 0)
 }
+
+// Mirrors the jq -r rendering block in review_commit_2.sh exactly:
+//   - empty files[] → "✅ No issues found in this PR."
+//   - per file: "### filename", then either "✅ No issues." (empty issues) or
+//     "- [Line N: ][severity] comment" per issue, followed by a blank line.
+//
+// Issues with an empty/whitespace-only comment are filtered out defensively
+// even though isParsedReview should already have rejected them upstream —
+// this keeps renderReviewMarkdown safe to call directly (e.g. in tests)
+// without relying on the caller to have validated first.
+//
+// Blank-filename file entries are dropped via getRealFiles() before checking
+// review.files.length, so a response consisting entirely of hallucinated
+// blank-filename entries still renders the all-clear message rather than a
+// stray "### " block.
+export function renderReviewMarkdown(review: ParsedReview): string {
+  const realFiles = getRealFiles(review)
+  if (realFiles.length === 0) {
+    return '✅ No issues found in this PR.'
+  }
+
+  const blocks: string[] = []
+  for (const file of realFiles) {
+    const lines: string[] = [`### ${file.filename}`]
+    const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0)
+    if (issues.length === 0) {
+      lines.push('✅ No issues.')
+    } else {
+      for (const issue of issues) {
+        const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : ''
+        const severity = issue.severity ?? 'suggestion'
+        lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`)
+      }
+    }
+    blocks.push(lines.join('\n'))
+  }
+  return blocks.join('\n\n')
+}
