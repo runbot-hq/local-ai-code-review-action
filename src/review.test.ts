@@ -9,6 +9,8 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { REVIEW_SCHEMA, buildReviewSchema, getRealFiles, renderReviewMarkdown } from './review'
 import type { ParsedReview, ReviewFile } from './review'
+import { buildDiffBlock } from './diff'
+import type { ChangedFile } from './diff'
 
 test('buildReviewSchema sets files.maxItems to the supplied count', () => {
   const schema = buildReviewSchema(3)
@@ -59,90 +61,60 @@ test('two calls with different counts produce independent maxItems', () => {
 })
 
 // ---------------------------------------------------------------------------
-// buildDiffBlock logic — pure re-implementation for isolation
+// buildDiffBlock — exercises the production implementation from diff.ts
 // ---------------------------------------------------------------------------
-//
-// buildDiffBlock lives inside run() as a closure over `files` and is not
-// directly importable. The tests below re-implement the same pure logic in
-// isolation so the counting rules can be verified without spawning the full
-// action. Any change to buildDiffBlock in index.ts must stay consistent with
-// the behaviour documented here.
-
-type PatchFile = { filename: string; status: string; patch?: string | null }
-
-function buildDiffBlockPure(
-  files: PatchFile[],
-  maxChars: number
-): { diffBlock: string; truncated: boolean; includedFileCount: number } {
-  let diffBlock = ''
-  let truncated = false
-  let includedFileCount = 0
-  for (const f of files) {
-    if (!f.patch) continue
-    const chunk =
-      `### ${f.filename} (${f.status})\n` +
-      `\`\`\`diff\n${f.patch}\n\`\`\`\n\n`
-    if ((diffBlock + chunk).length > maxChars) {
-      truncated = true
-      break
-    }
-    diffBlock += chunk
-    includedFileCount += 1
-  }
-  return { diffBlock, truncated, includedFileCount }
-}
 
 test('files without a patch do not increase includedFileCount', () => {
-  const files: PatchFile[] = [
-    { filename: 'a.ts', status: 'modified', patch: null },
-    { filename: 'b.ts', status: 'modified', patch: undefined },
-    { filename: 'c.ts', status: 'modified', patch: 'console.log(1)' },
+  const files: ChangedFile[] = [
+    { filename: 'a.ts', status: 'modified', additions: 0, deletions: 0, patch: undefined },
+    { filename: 'b.ts', status: 'modified', additions: 0, deletions: 0, patch: undefined },
+    { filename: 'c.ts', status: 'modified', additions: 0, deletions: 0, patch: 'console.log(1)' },
   ]
-  const { includedFileCount } = buildDiffBlockPure(files, 100_000)
+  const { includedFileCount } = buildDiffBlock(files, 100_000)
   assert.equal(includedFileCount, 1)
 })
 
 test('a file that exceeds maxChars does not increase includedFileCount', () => {
-  const files: PatchFile[] = [
-    { filename: 'big.ts', status: 'modified', patch: 'x'.repeat(500) },
+  const files: ChangedFile[] = [
+    { filename: 'big.ts', status: 'modified', additions: 0, deletions: 0, patch: 'x'.repeat(500) },
   ]
-  const { includedFileCount, truncated } = buildDiffBlockPure(files, 10)
+  const { includedFileCount, truncated } = buildDiffBlock(files, 10)
   assert.equal(includedFileCount, 0)
   assert.equal(truncated, true)
 })
 
 test('three-file prompt produces includedFileCount of 3 (issue #68 scenario)', () => {
-  const files: PatchFile[] = [
-    { filename: 'A.swift', status: 'modified', patch: '+let a = 1' },
-    { filename: 'B.swift', status: 'modified', patch: '+let b = 2' },
-    { filename: 'C.swift', status: 'modified', patch: '+let c = 3' },
+  const files: ChangedFile[] = [
+    { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let a = 1' },
+    { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let b = 2' },
+    { filename: 'C.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let c = 3' },
   ]
-  const { includedFileCount } = buildDiffBlockPure(files, 100_000)
+  const { includedFileCount } = buildDiffBlock(files, 100_000)
   assert.equal(includedFileCount, 3)
 })
 
 test('initial format uses initial file count', () => {
-  const files: PatchFile[] = [
-    { filename: 'A.swift', status: 'modified', patch: '+let a = 1' },
-    { filename: 'B.swift', status: 'modified', patch: '+let b = 2' },
+  const files: ChangedFile[] = [
+    { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let a = 1' },
+    { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch: '+let b = 2' },
   ]
-  const { includedFileCount } = buildDiffBlockPure(files, 100_000)
+  const { includedFileCount } = buildDiffBlock(files, 100_000)
   const schema = buildReviewSchema(includedFileCount)
   assert.equal(schema.properties.files.maxItems, 2)
 })
 
 test('reduced retry uses reduced prompt file count', () => {
   const patch = '+let x = ' + 'y'.repeat(300)
-  const files: PatchFile[] = [
-    { filename: 'A.swift', status: 'modified', patch },
-    { filename: 'B.swift', status: 'modified', patch },
-    { filename: 'C.swift', status: 'modified', patch },
+  const files: ChangedFile[] = [
+    { filename: 'A.swift', status: 'modified', additions: 0, deletions: 0, patch },
+    { filename: 'B.swift', status: 'modified', additions: 0, deletions: 0, patch },
+    { filename: 'C.swift', status: 'modified', additions: 0, deletions: 0, patch },
   ]
-  const initial = buildDiffBlockPure(files, 100_000)
+  const initial = buildDiffBlock(files, 100_000)
   assert.equal(initial.includedFileCount, 3)
 
   const retryLimit = Math.floor(initial.diffBlock.length / 2)
-  const reduced = buildDiffBlockPure(files, retryLimit)
+  const reduced = buildDiffBlock(files, retryLimit)
   // Reduced diff fits fewer files — confirm count is less
   assert.ok(reduced.includedFileCount < initial.includedFileCount)
 
@@ -153,14 +125,14 @@ test('reduced retry uses reduced prompt file count', () => {
 test('full-diff fallback uses original includedFileCount when reduced diff is empty', () => {
   // Simulate a single very large file: reduced limit = 0 files fit
   const patch = 'x'.repeat(1000)
-  const files: PatchFile[] = [
-    { filename: 'Large.swift', status: 'modified', patch },
+  const files: ChangedFile[] = [
+    { filename: 'Large.swift', status: 'modified', additions: 0, deletions: 0, patch },
   ]
-  const initial = buildDiffBlockPure(files, 100_000)
+  const initial = buildDiffBlock(files, 100_000)
   assert.equal(initial.includedFileCount, 1)
 
   const retryLimit = Math.floor(initial.diffBlock.length / 2)
-  const reduced = buildDiffBlockPure(files, retryLimit)
+  const reduced = buildDiffBlock(files, retryLimit)
   // Nothing fits in half the budget
   const usedFullDiffFallback = reduced.diffBlock.length === 0
   const retryFileCount = usedFullDiffFallback ? initial.includedFileCount : reduced.includedFileCount
