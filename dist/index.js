@@ -30932,7 +30932,11 @@ async function run() {
             const realFiles = (0, review_1.getRealFiles)(parsed);
             noIssuesFound = realFiles.every((f) => f.issues.length === 0);
             const emptyFilesList = realFiles.length === 0;
-            core.info(`[step 4/5] Rendered ${realFiles.length} file section(s) from structured output (${parsed.files.length - realFiles.length} hallucinated blank-filename entr${parsed.files.length - realFiles.length === 1 ? 'y' : 'ies'} dropped)`);
+            const normalizedEntryCount = parsed.files.length - realFiles.length;
+            core.info(`[step 4/5] Rendered ${realFiles.length} file section(s) ` +
+                `from structured output ` +
+                `(${normalizedEntryCount} blank or duplicate file ` +
+                `entr${normalizedEntryCount === 1 ? 'y' : 'ies'} normalized)`);
             core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned no real per-file entries)' : ''}`);
         }
         catch (e) {
@@ -31166,18 +31170,6 @@ function isParsedReview(value) {
         });
     });
 }
-// Filters out file entries with an empty/whitespace-only filename.
-//
-// Observed in production: the model can satisfy REVIEW_SCHEMA (filename is
-// only typed as `string`, not required to be non-empty) by emitting a file
-// entry with filename: "" whose "issues" list contains a non-finding dressed
-// up as a finding, e.g. { comment: "The diff contains no security issues." }.
-// This is the model's way of saying "nothing to report" for a category it
-// was asked to consider, but it is not a real per-file review result — left
-// unfiltered it renders as a redundant blank "### " block in the comment,
-// and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
-// on an otherwise all-clear PR (see index.ts noIssuesFound).
-//
 // Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
 // Used to bound the top-level files[] array to the number of complete file
 // chunks included in the prompt, preventing the model from emitting the same
@@ -31200,8 +31192,56 @@ function buildReviewSchema(maxFiles) {
 }
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
+//
+// Coalesces repeated file entries and deduplicates issues within each file:
+//   - Drops entries with blank filenames.
+//   - Groups entries by trimmed filename, preserving first-seen file order.
+//   - Merges issues from repeated file entries.
+//   - Deduplicates issues within each file, preserving first-seen issue order.
+//   - An issue is a duplicate when its rendered values are equal:
+//     line + effective severity + trimmed comment.
+//   - Missing severity is treated as "suggestion" (matching the renderer).
+//   - Does not deduplicate across different filenames.
+//   - Does not mutate the input ParsedReview.
 function getRealFiles(review) {
-    return review.files.filter((f) => f.filename?.trim().length > 0);
+    const result = [];
+    const entries = new Map();
+    for (const candidate of review.files) {
+        const filename = candidate.filename.trim();
+        if (!filename)
+            continue;
+        let entry = entries.get(filename);
+        if (!entry) {
+            entry = {
+                file: {
+                    filename,
+                    issues: [],
+                },
+                issueKeys: new Set(),
+            };
+            entries.set(filename, entry);
+            result.push(entry.file);
+        }
+        for (const issue of candidate.issues) {
+            const comment = issue.comment.trim();
+            if (!comment)
+                continue;
+            const effectiveSeverity = issue.severity ?? 'suggestion';
+            const key = JSON.stringify([
+                issue.line ?? null,
+                effectiveSeverity,
+                comment,
+            ]);
+            if (entry.issueKeys.has(key))
+                continue;
+            entry.issueKeys.add(key);
+            entry.file.issues.push({
+                ...issue,
+                comment,
+            });
+        }
+    }
+    return result;
 }
 // Mirrors the jq -r rendering block in review_commit_2.sh exactly:
 //   - empty files[] → "✅ No issues found in this PR."

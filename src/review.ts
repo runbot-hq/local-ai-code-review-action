@@ -97,18 +97,6 @@ export function isParsedReview(value: unknown): value is ParsedReview {
   })
 }
 
-// Filters out file entries with an empty/whitespace-only filename.
-//
-// Observed in production: the model can satisfy REVIEW_SCHEMA (filename is
-// only typed as `string`, not required to be non-empty) by emitting a file
-// entry with filename: "" whose "issues" list contains a non-finding dressed
-// up as a finding, e.g. { comment: "The diff contains no security issues." }.
-// This is the model's way of saying "nothing to report" for a category it
-// was asked to consider, but it is not a real per-file review result — left
-// unfiltered it renders as a redundant blank "### " block in the comment,
-// and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
-// on an otherwise all-clear PR (see index.ts noIssuesFound).
-//
 // Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
 // Used to bound the top-level files[] array to the number of complete file
 // chunks included in the prompt, preventing the model from emitting the same
@@ -132,8 +120,69 @@ export function buildReviewSchema(maxFiles: number) {
 
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
+//
+// Coalesces repeated file entries and deduplicates issues within each file:
+//   - Drops entries with blank filenames.
+//   - Groups entries by trimmed filename, preserving first-seen file order.
+//   - Merges issues from repeated file entries.
+//   - Deduplicates issues within each file, preserving first-seen issue order.
+//   - An issue is a duplicate when its rendered values are equal:
+//     line + effective severity + trimmed comment.
+//   - Missing severity is treated as "suggestion" (matching the renderer).
+//   - Does not deduplicate across different filenames.
+//   - Does not mutate the input ParsedReview.
 export function getRealFiles(review: ParsedReview): ReviewFile[] {
-  return review.files.filter((f) => f.filename?.trim().length > 0)
+  const result: ReviewFile[] = []
+
+  const entries = new Map<
+    string,
+    {
+      file: ReviewFile
+      issueKeys: Set<string>
+    }
+  >()
+
+  for (const candidate of review.files) {
+    const filename = candidate.filename.trim()
+    if (!filename) continue
+
+    let entry = entries.get(filename)
+
+    if (!entry) {
+      entry = {
+        file: {
+          filename,
+          issues: [],
+        },
+        issueKeys: new Set<string>(),
+      }
+
+      entries.set(filename, entry)
+      result.push(entry.file)
+    }
+
+    for (const issue of candidate.issues) {
+      const comment = issue.comment.trim()
+      if (!comment) continue
+
+      const effectiveSeverity = issue.severity ?? 'suggestion'
+      const key = JSON.stringify([
+        issue.line ?? null,
+        effectiveSeverity,
+        comment,
+      ])
+
+      if (entry.issueKeys.has(key)) continue
+      entry.issueKeys.add(key)
+
+      entry.file.issues.push({
+        ...issue,
+        comment,
+      })
+    }
+  }
+
+  return result
 }
 
 // Mirrors the jq -r rendering block in review_commit_2.sh exactly:

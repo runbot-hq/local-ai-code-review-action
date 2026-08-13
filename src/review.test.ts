@@ -7,7 +7,8 @@
 //   - The returned schema is a fresh object each call
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { REVIEW_SCHEMA, buildReviewSchema } from './review'
+import { REVIEW_SCHEMA, buildReviewSchema, getRealFiles, renderReviewMarkdown } from './review'
+import type { ParsedReview, ReviewFile } from './review'
 
 test('buildReviewSchema sets files.maxItems to the supplied count', () => {
   const schema = buildReviewSchema(3)
@@ -169,4 +170,161 @@ test('full-diff fallback uses original includedFileCount when reduced diff is em
 
   const retrySchema = buildReviewSchema(retryFileCount)
   assert.equal(retrySchema.properties.files.maxItems, 1)
+})
+
+// ---------------------------------------------------------------------------
+// getRealFiles — deduplication and coalescing (issue #73)
+// ---------------------------------------------------------------------------
+
+test('getRealFiles: repeated filename entries produce one ReviewFile', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: 'foo' }] },
+      { filename: 'a.ts', issues: [{ comment: 'bar' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].filename, 'a.ts')
+})
+
+test('getRealFiles: a clean entry followed by an entry with issues produces one file containing the issues', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [] },
+      { filename: 'a.ts', issues: [{ comment: 'found it' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 1)
+  assert.equal(result[0].issues[0].comment, 'found it')
+})
+
+test('getRealFiles: identical repeated issues produce one issue', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: 'same' }] },
+      { filename: 'a.ts', issues: [{ comment: 'same' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 1)
+  assert.equal(result[0].issues[0].comment, 'same')
+})
+
+test('getRealFiles: distinct issues for the same file are preserved', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: 'first' }, { comment: 'second' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 2)
+})
+
+test('getRealFiles: same comment with different line numbers is preserved as separate findings', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ line: 1, comment: 'same' }, { line: 2, comment: 'same' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 2)
+})
+
+test('getRealFiles: same comment and line with different severities is preserved', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ line: 5, severity: 'warning', comment: 'hello' }, { line: 5, severity: 'critical', comment: 'hello' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 2)
+})
+
+test('getRealFiles: missing severity and explicit suggestion deduplicate as equivalent', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: 'same' }, { severity: 'suggestion', comment: 'same' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 1)
+})
+
+test('getRealFiles: leading/trailing comment whitespace does not defeat deduplication', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: '  hello world  ' }] },
+      { filename: 'a.ts', issues: [{ comment: 'hello world' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].issues.length, 1)
+  assert.equal(result[0].issues[0].comment, 'hello world')
+})
+
+test('getRealFiles: blank filenames are dropped', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: '', issues: [{ comment: 'should not appear' }] },
+      { filename: '  ', issues: [{ comment: 'should not appear either' }] },
+      { filename: 'real.ts', issues: [{ comment: 'real' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 1)
+  assert.equal(result[0].filename, 'real.ts')
+})
+
+test('getRealFiles: first-seen file and issue ordering is preserved', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'b.ts', issues: [{ comment: 'B first' }] },
+      { filename: 'z.ts', issues: [{ comment: 'Z first' }] },
+      { filename: 'a.ts', issues: [{ comment: 'A first' }] },
+      { filename: 'b.ts', issues: [{ comment: 'B second' }] },
+    ],
+  }
+  const result = getRealFiles(review)
+  assert.equal(result.length, 3)
+  assert.equal(result[0].filename, 'b.ts')
+  assert.equal(result[1].filename, 'z.ts')
+  assert.equal(result[2].filename, 'a.ts')
+  assert.equal(result[0].issues[0].comment, 'B first')
+  assert.equal(result[0].issues[1].comment, 'B second')
+})
+
+test('getRealFiles: the input ParsedReview is not mutated', () => {
+  const original: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: 'before' }] },
+      { filename: 'a.ts', issues: [{ comment: 'after' }] },
+    ],
+  }
+  const originalJson = JSON.stringify(original)
+  getRealFiles(original)
+  assert.equal(JSON.stringify(original), originalJson)
+})
+
+test('renderReviewMarkdown: emits one header and one bullet for the #73 repetition case', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'app.ts', issues: [{ line: 10, severity: 'warning', comment: 'Use const' }] },
+      { filename: 'app.ts', issues: [{ line: 10, severity: 'warning', comment: 'Use const' }] },
+    ],
+  }
+  const md = renderReviewMarkdown(review)
+  // Should have exactly one "### app.ts" header and one bullet
+  const headerMatches = md.match(/### app\.ts/g)
+  assert.equal(headerMatches?.length, 1)
+  const bulletMatches = md.match(/- /g)
+  assert.equal(bulletMatches?.length, 1)
 })
