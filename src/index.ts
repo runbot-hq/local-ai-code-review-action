@@ -8,7 +8,7 @@ import { selectTier } from './tier'
 import { ensureBinary } from './binary'
 import { localAiCli, isFatalError, isEmptyThinkExhaust } from './cli'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
-import { REVIEW_SCHEMA, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
+import { buildReviewSchema, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -278,9 +278,14 @@ async function run(): Promise<void> {
 
     function buildDiffBlock(
       maxChars: number
-    ): { diffBlock: string; truncated: boolean } {
+    ): {
+      diffBlock: string
+      truncated: boolean
+      includedFileCount: number
+    } {
       let diffBlock = ''
       let truncated = false
+      let includedFileCount = 0
       for (const f of files) {
         if (!f.patch) {
           core.info(`  skip ${f.filename} — no patch`)
@@ -293,11 +298,12 @@ async function run(): Promise<void> {
           break
         }
         diffBlock += chunk
+        includedFileCount += 1
       }
-      return { diffBlock, truncated }
+      return { diffBlock, truncated, includedFileCount }
     }
 
-    let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS)
+    let { diffBlock, truncated, includedFileCount } = buildDiffBlock(MAX_PATCH_CHARS)
     core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`)
 
     if (!diffBlock) {
@@ -353,7 +359,7 @@ async function run(): Promise<void> {
     // shape, which is a much stronger anti-drift guarantee than prompt
     // instructions alone — the model cannot emit a changelog/summary if the
     // schema doesn't have a field for one.
-    const format = JSON.stringify(REVIEW_SCHEMA)
+    const format = JSON.stringify(buildReviewSchema(includedFileCount))
 
     // Pass empty string for instructions so the binary does not also forward
     // them as a system prompt — they are already embedded in the user prompt above.
@@ -373,12 +379,15 @@ async function run(): Promise<void> {
         // (complete file chunks only, no mid-patch slicing) and 50% of the
         // output-token budget. The timeout is preserved unchanged.
         const retryDiffLimit = Math.floor(diffBlock.length / 2)
-        const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock
+        const reducedRetry = buildDiffBlock(retryDiffLimit)
 
-        const usedFullDiffFallback = reducedRetryDiff.length === 0
+        const usedFullDiffFallback = reducedRetry.diffBlock.length === 0
         const retryDiffBlock = usedFullDiffFallback
           ? diffBlock
-          : reducedRetryDiff
+          : reducedRetry.diffBlock
+        const retryFileCount = usedFullDiffFallback
+          ? includedFileCount
+          : reducedRetry.includedFileCount
 
         const retryMaxTokens = Math.floor(maximumResponseTokens / 2)
 
@@ -404,6 +413,7 @@ async function run(): Promise<void> {
 
         rawReview = localAiCli(bin, retryPrompt, {
           ...cliOpts,
+          format: JSON.stringify(buildReviewSchema(retryFileCount)),
           maximumResponseTokens: retryMaxTokens,
         })
       }

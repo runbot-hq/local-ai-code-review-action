@@ -111,6 +111,27 @@ export function isParsedReview(value: unknown): value is ParsedReview {
 //
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
+// Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
+// Used to bound the top-level files[] array to the number of complete file
+// chunks included in the prompt, preventing the model from emitting the same
+// valid file object repeatedly until the response reaches the output-token
+// limit and becomes truncated JSON.
+//
+// Do not mutate the exported REVIEW_SCHEMA constant — always construct a new
+// object so callers that read REVIEW_SCHEMA directly are unaffected.
+export function buildReviewSchema(maxFiles: number) {
+  return {
+    ...REVIEW_SCHEMA,
+    properties: {
+      ...REVIEW_SCHEMA.properties,
+      files: {
+        ...REVIEW_SCHEMA.properties.files,
+        maxItems: maxFiles,
+      },
+    },
+  } as const
+}
+
 export function getRealFiles(review: ParsedReview): ReviewFile[] {
   return review.files.filter((f) => f.filename?.trim().length > 0)
 }
