@@ -30306,7 +30306,7 @@ function readConfig() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.NON_CODE_PATTERNS = exports.BOT_SIGNATURE = exports.BOT_SIGNATURE_SEARCH_KEY = void 0;
+exports.NON_CODE_PATTERNS = exports.REVIEW_TITLE = exports.REVIEW_COMMENT_MARKER = exports.BOT_SIGNATURE = exports.BOT_SIGNATURE_SEARCH_KEY = void 0;
 // BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
 // SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
 // so it can be matched reliably with String.includes()).
@@ -30315,6 +30315,14 @@ exports.NON_CODE_PATTERNS = exports.BOT_SIGNATURE = exports.BOT_SIGNATURE_SEARCH
 // for comments posted under the old format.
 exports.BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
 exports.BOT_SIGNATURE = `\n\n---\n> 🤖 [${exports.BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
+// REVIEW_COMMENT_MARKER is the hidden HTML comment placed at the very top of
+// every review comment so the action can reliably identify and replace its own
+// previous comments without false-positive matching on user comments.
+// REVIEW_TITLE is the human-visible heading that immediately follows the marker.
+// Both are kept here (not in the renderer) so posting.ts, review.ts and tests
+// all share one canonical definition.
+exports.REVIEW_COMMENT_MARKER = '<!-- runbot-review-summary-comment -->';
+exports.REVIEW_TITLE = '## 🤖 RunBot Review';
 // File extensions/names that carry no reviewable logic — excluded from the
 // reviewable-lines count used to select shallow vs deep review tier.
 exports.NON_CODE_PATTERNS = [
@@ -31297,7 +31305,7 @@ async function resolveReviewFiles(resolved, config) {
 /***/ }),
 
 /***/ 7491:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
@@ -31317,6 +31325,7 @@ exports.isParsedReview = isParsedReview;
 exports.buildReviewSchema = buildReviewSchema;
 exports.getRealFiles = getRealFiles;
 exports.renderReviewMarkdown = renderReviewMarkdown;
+const constants_1 = __nccwpck_require__(7242);
 exports.REVIEW_SCHEMA = {
     type: 'object',
     properties: {
@@ -31480,10 +31489,18 @@ function getRealFiles(review) {
 // review.files.length, so a response consisting entirely of hallucinated
 // blank-filename entries still renders the all-clear message rather than a
 // stray "### " block.
+// Wraps any review body string with the canonical marker and title that
+// every posted PR comment must begin with. Keeping this in the renderer
+// (rather than in posting.ts) ensures the PR comment, review_body output,
+// review_file artifact and any direct renderReviewMarkdown callers all
+// share the same canonical structure.
+function wrapReviewBody(body) {
+    return [constants_1.REVIEW_COMMENT_MARKER, constants_1.REVIEW_TITLE, '', body].join('\n');
+}
 function renderReviewMarkdown(review) {
     const realFiles = getRealFiles(review);
     if (realFiles.length === 0) {
-        return '✅ No issues found in this PR.';
+        return wrapReviewBody('✅ No issues found in this PR.');
     }
     const blocks = [];
     for (const file of realFiles) {
@@ -31501,7 +31518,7 @@ function renderReviewMarkdown(review) {
         }
         blocks.push(lines.join('\n'));
     }
-    return blocks.join('\n\n');
+    return wrapReviewBody(blocks.join('\n\n'));
 }
 
 
