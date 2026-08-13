@@ -30724,7 +30724,7 @@ async function run() {
         // Phase 1: validate PR context, run skip-label checks, fetch head commit.
         // Returns before binary is ensured so title/body skips never touch the binary.
         const resolved = await (0, review_context_1.resolveReviewContext)(config);
-        if (resolved.skipReason) {
+        if (resolved.skipped) {
             core.info(resolved.skipReason);
             return;
         }
@@ -30736,112 +30736,25 @@ async function run() {
         const bin = await (0, binary_1.ensureBinary)(config.token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
         // Phase 2: resolve review scope, fetch changed files, emit step-2 logs.
+        // TypeScript knows resolved.headCommit is present here because resolved.skipped === false.
         const context = await (0, review_context_1.resolveReviewFiles)(resolved, config);
         if (context.skipReason) {
             core.info(context.skipReason);
             return;
         }
-        // ensureBinary() downloads or locates the local-ai-cli binary and returns
-        // its path. The binary is committed as dist/index.js is NOT the entrypoint
-        // here — this action runs via a pre-built Node bundle (dist/index.js) which
-        // shells out to the local-ai-cli binary for inference.
-        core.info('[step 1/5] Ensuring local-ai-cli binary...');
-        const bin = await (0, binary_1.ensureBinary)(config.token);
-        core.info(`[step 1/5] Binary ready: ${bin}`);
-        const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr');
-        const parsedAlwaysReviewEntirePR = (0, scope_1.parseAlwaysReviewEntirePR)(rawAlwaysReviewEntirePR);
-        if (parsedAlwaysReviewEntirePR === undefined) {
-            core.warning(`[init] always_review_entire_pr: unrecognised value ` +
-                `"${rawAlwaysReviewEntirePR}" — treating as false. ` +
-                `Use 'true' or 'false'.`);
-        }
-        const alwaysReviewEntirePR = parsedAlwaysReviewEntirePR ?? false;
-        const eventAction = github.context.payload.action;
-        const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction, alwaysReviewEntirePR);
-        core.info(`[step 2/5] always_review_entire_pr=${alwaysReviewEntirePR}, ` +
-            `effective_scope=${reviewScope}, ` +
-            `action=${eventAction}`);
-        let files;
-        if (reviewScope === 'head-commit') {
-            files = (headCommit.files ?? []).map((file) => ({
-                filename: file.filename,
-                status: file.status,
-                additions: file.additions,
-                deletions: file.deletions,
-                patch: file.patch,
-            }));
-            core.info(`[step 2/5] Review scope: head commit ${pr.head.sha} ` +
-                `(${files.length} file(s))`);
-        }
-        else {
-            const prResponse = await (0, github_1.withRetry)('fetch-pr-files', () => octokit.rest.pulls.listFiles({
-                owner,
-                repo: repoName,
-                pull_number: prNumber,
-                per_page: 100,
-            }));
-            files = prResponse.data.map((file) => ({
-                filename: file.filename,
-                status: file.status,
-                additions: file.additions,
-                deletions: file.deletions,
-                patch: file.patch,
-            }));
-            core.info(`[step 2/5] Review scope: full PR #${prNumber} ` +
-                `(${files.length} file(s), action=${eventAction})`);
-        }
-        for (const f of files) {
-            core.info(`  • ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`);
-        }
-        if (files.length === 0) {
-            core.info('[step 2/5] No changed files — skipping review.');
-            return;
-        }
-        if (files.length === 100) {
-            core.warning(`[step 2/5] ${reviewScope} file list reached the 100-file cap`);
-        }
-        // 6. Select review tier based on reviewable lines
-        // Tier drives both the dynamic think-mode default and the
-        // maximum_response_tokens default.
-        // shallow: < 150 reviewable lines — think=false (always), max_tokens=4096
-        // deep:   ≥ 150 reviewable lines — think=thinkOverride,   max_tokens=8192
-        // SHALLOW_THRESHOLD of 150 was chosen empirically: below this, diffs are
-        // small enough that extended thinking adds latency without improving output.
-        //
-        // The `think` input (thinkOverride) is a hard override on top of this:
-        // when thinkOverride is false (the default), think is always false
-        // regardless of tier. When thinkOverride is true, the tier-based dynamic
-        // behavior above is restored.
-        const { tier, reviewableLines } = (0, tier_1.selectTier)(files);
-        const think = thinkOverride && tier === 'deep';
-        const maximumResponseTokens = maximumResponseTokensOverride ?? (tier === 'deep' ? 8192 : 4096);
-        core.info(`[tier] ${tier}, reviewable_lines=${reviewableLines}, think=${think}, max_tokens=${maximumResponseTokens}${maximumResponseTokensOverride !== undefined ? ' (caller override)' : ''}`);
-        // 7. Build diff block
-        core.info('[step 3/5] Building diff block...');
-        const MAX_PATCH_CHARS = 60000;
-        function buildDiffBlock(maxChars) {
-            let diffBlock = '';
-            let truncated = false;
-            let includedFileCount = 0;
-            for (const f of files) {
-                if (!f.patch) {
-                    core.info(`  skip ${f.filename} — no patch`);
-                    continue;
-                }
-                const chunk = `### ${f.filename} (${f.status})\n\`\`\`diff\n${f.patch}\n\`\`\`\n\n`;
-                if ((diffBlock + chunk).length > maxChars) {
-                    truncated = true;
-                    core.warning(`[step 3/5] Diff truncated at ${maxChars} chars — stopping at ${f.filename}`);
-                    break;
-                }
-                diffBlock += chunk;
-                includedFileCount += 1;
-            }
-            return { diffBlock, truncated, includedFileCount };
-        }
-        let { diffBlock, truncated, includedFileCount } = buildDiffBlock(MAX_PATCH_CHARS);
-        core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`);
-        if (!diffBlock) {
+        const result = await (0, inference_1.runReviewInference)({
+            bin,
+            files: context.files,
+            prNumber: context.prNumber,
+            prTitle: context.prTitle,
+            config,
+        });
+        // Use the explicit discriminant rather than proxying on result.markdown;
+        // the renderer produces non-empty Markdown even for all-clear responses
+        // so !result.markdown would silently bypass outputs and the job summary
+        // if the renderer ever changes.
+        if (!result.valid &&
+            result.error === 'no-diff') {
             core.info('[step 3/5] No patchable diff content — skipping review.');
             return;
         }
@@ -31301,14 +31214,15 @@ async function resolveReviewContext(config) {
     }
     core.info(`[init] PR: #${prNumber} "${prTitle}" in ${owner}/${repoName}`);
     const octokit = github.getOctokit(config.token);
+    const base = { token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit };
     // Title and body are checked before the API request; they are already present
     // in the webhook payload so this costs nothing and avoids an unnecessary call.
     const prBody = pr.body ?? '';
     if (prTitle.toLowerCase().includes(config.skipLabel) ||
         prBody.toLowerCase().includes(config.skipLabel)) {
         return {
-            token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
-            headCommit: null,
+            ...base,
+            skipped: true,
             skipReason: `[init] Skip label "${config.skipLabel}" detected in title/body — skipping AI review.`,
         };
     }
@@ -31321,12 +31235,13 @@ async function resolveReviewContext(config) {
     core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`);
     if (headCommitMessage.includes(config.skipLabel)) {
         return {
-            token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit,
+            ...base,
+            skipped: true,
             skipReason: `[init] Skip label "${config.skipLabel}" detected in commit message — skipping AI review.`,
         };
     }
     core.info('[init] skip_review_label: not found — proceeding with review');
-    return { token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit };
+    return { ...base, skipped: false, headCommit };
 }
 // Phase 2: determine review scope, fetch files (reusing the head commit for
 // synchronize), and emit step-2 logs. Runs after ensureBinary() so step-1
