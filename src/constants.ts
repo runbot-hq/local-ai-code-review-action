@@ -7,6 +7,11 @@
 export const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot'
 export const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`
 
+// Hidden marker and visible heading prepended to every rendered review.
+// Kept as constants so rendering and tests share one canonical definition.
+export const REVIEW_COMMENT_MARKER = '<!-- runbot-review-summary-comment -->'
+export const REVIEW_TITLE = '## 🤖 RunBot Review'
+
 // File extensions/names that carry no reviewable logic — excluded from the
 // reviewable-lines count used to select shallow vs deep review tier.
 export const NON_CODE_PATTERNS = [
