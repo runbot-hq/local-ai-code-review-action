@@ -304,7 +304,7 @@ test('renderReviewMarkdown: emits one header and one bullet for the #73 repetiti
   assert.equal(bulletMatches?.length, 1)
 })
 
-test('renderReviewMarkdown adds marker and title as exact prefix', () => {
+test('renderReviewMarkdown adds marker and title as exact prefix with blank line', () => {
   const review: ParsedReview = {
     files: [
       {
@@ -314,10 +314,11 @@ test('renderReviewMarkdown adds marker and title as exact prefix', () => {
     ],
   }
   const markdown = renderReviewMarkdown(review)
-  const expectedPrefix = [REVIEW_COMMENT_MARKER, REVIEW_TITLE, ''].join('\n')
+  // Two trailing '\n' entries produce the required blank line between title and body.
+  const expectedPrefix = [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', ''].join('\n')
   assert.ok(
     markdown.startsWith(expectedPrefix),
-    `Expected markdown to start with marker+title prefix, got: ${JSON.stringify(markdown.slice(0, 100))}`
+    `Expected blank line after title, got: ${JSON.stringify(markdown.slice(0, 120))}`
   )
 })
 
@@ -341,13 +342,12 @@ test('renderReviewMarkdown emits marker and title exactly once', () => {
   )
 })
 
-test('renderReviewMarkdown no-issues case also has marker and title', () => {
+test('renderReviewMarkdown no-issues case emits exact full output', () => {
   const review: ParsedReview = { files: [] }
   const markdown = renderReviewMarkdown(review)
-  const expectedPrefix = [REVIEW_COMMENT_MARKER, REVIEW_TITLE, ''].join('\n')
-  assert.ok(
-    markdown.startsWith(expectedPrefix),
-    `No-issues output must still begin with marker+title`
+  assert.equal(
+    markdown,
+    [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', '✅ No issues found in this PR.'].join('\n'),
+    'No-issues output must match canonical marker+title+blank+body exactly'
   )
-  assert.ok(markdown.includes('✅ No issues found in this PR.'))
 })
