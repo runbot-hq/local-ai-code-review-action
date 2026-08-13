@@ -31,6 +31,8 @@ export async function resolveReviewContext(
   const pr        = ctx.payload.pull_request
   const prNumber  = pr.number as number
   const prTitle   = (pr.title as string) ?? ''
+  // payload.head_commit is unavailable on pull_request events; the head SHA
+  // must be read from pr.head.sha instead.
   const headSha   = pr.head.sha as string
   const repo      = process.env.GITHUB_REPOSITORY ?? ''
   const [owner, repoName] = repo.split('/')
@@ -45,7 +47,8 @@ export async function resolveReviewContext(
     token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
   }
 
-  // Skip-label check: title/body first (free), then head commit (API call)
+  // Title and body are checked before the API request; they are already present
+  // in the webhook payload so this costs nothing and avoids an unnecessary call.
   const prBody = (pr.body as string) ?? ''
   if (
     prTitle.toLowerCase().includes(config.skipLabel) ||
@@ -55,6 +58,8 @@ export async function resolveReviewContext(
   }
 
   core.info(`[init] Fetching head commit message for skip check (sha: ${headSha})...`)
+  // The commit response is reused below for head-commit file selection, so we
+  // keep a reference to the full response data rather than discarding it.
   const commitResponse = await withRetry('fetch-head-commit', () =>
     octokit.rest.repos.getCommit({ owner, repo: repoName, ref: headSha, per_page: 100 })
   )
@@ -79,6 +84,9 @@ export async function resolveReviewContext(
 
   let files: ReviewFile[]
 
+  // synchronize uses head-commit files (already fetched above) so that only the
+  // files touched by the triggering push are reviewed.  All other supported
+  // actions (opened, reopened) use the full PR file list instead.
   if (reviewScope === 'head-commit') {
     files = (headCommit.files ?? []).map((f) => ({
       filename: f.filename,

@@ -95,6 +95,8 @@ export async function runReviewInference(
     diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`
   }
 
+  // Instructions live in the user prompt rather than the system prompt because
+  // some Qwen/Ollama chat templates silently drop or truncate the system prompt.
   const instructions = [
     'You are a senior software engineer performing a concise, constructive code review.',
     'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
@@ -113,6 +115,8 @@ export async function runReviewInference(
     ...(promptExtra ? [`\nExtra instructions: ${promptExtra}`] : []),
   ].join('\n')
 
+  // The JSON schema passed via `format` constrains the model to return valid
+  // structured output; without it, Ollama returns free-form text.
   const format = JSON.stringify(buildReviewSchema(includedFileCount))
 
   core.info(
@@ -142,6 +146,8 @@ export async function runReviewInference(
       core.warning('[step 4/5] think=true produced empty response — retrying with think=false')
       rawReview = localAiCli(bin, prompt, { ...cliOpts, think: false })
     } else {
+      // Retry degradation: use complete file chunks (no mid-file cuts) up to
+      // half the original diff budget, and half the response-token budget.
       const retryDiffLimit = Math.floor(diffBlock.length / 2)
       const reducedRetry = buildDiffBlock(files, retryDiffLimit)
 
@@ -199,6 +205,8 @@ export async function runReviewInference(
       throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)')
     }
     const markdown = renderReviewMarkdown(parsed)
+    // getRealFiles() filters out blank filenames and duplicate model entries
+    // before evaluating noIssuesFound, preventing false all-clears.
     const realFiles = getRealFiles(parsed)
     const noIssuesFound = realFiles.every((f) => f.issues.length === 0)
     const emptyFilesList = realFiles.length === 0
@@ -225,6 +233,8 @@ export async function runReviewInference(
       filesReviewed: includedFileCount,
     }
   } catch (e) {
+    // Invalid structured output is not equivalent to an all-clear result;
+    // valid:false signals callers to suppress comment creation/deletion.
     core.warning(
       `[step 4/5] Failed to parse/render structured JSON output — ` +
       `keeping raw response in logs and outputs only: ${String(e)}`

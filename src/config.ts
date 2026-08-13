@@ -42,12 +42,20 @@ export function readConfig(): ActionConfig {
   if (promptExtraRaw.length > 300) core.warning('[init] prompt_extra was truncated to 300 chars')
   const promptExtra = promptExtraRaw.slice(0, 300)
 
+  // num_ctx defaults to 16,384 — the context window that comfortably fits the
+  // 60,000-character diff budget plus prompt overhead without OOM-killing Ollama.
   const numCtx = parseInt(core.getInput('num_ctx') || '16384', 10)
   core.info(`[init] num_ctx: ${numCtx}`)
 
+  // repeat_penalty defaults to 1.2 — empirically chosen after observing the model
+  // enter repetition loops (repeating the same issue or phrase verbatim) at the
+  // default value of 1.0.
   const repeatPenalty = parseFloat(core.getInput('repeat_penalty') || '1.2')
   core.info(`[init] repeat_penalty: ${repeatPenalty}`)
 
+  // think interacts with tier selection: thinkOverride=true only activates the
+  // extended reasoning path when the tier resolved to 'deep'; shallow-tier runs
+  // always use think=false regardless of this input.
   const rawThink = core.getInput('think')
   if (rawThink && rawThink !== 'true' && rawThink !== 'false') {
     core.warning(`[init] think: unrecognised value "${rawThink}" — treating as false. Use 'true' or 'false'.`)
@@ -62,6 +70,9 @@ export function readConfig(): ActionConfig {
   const replaceExistingComment = rawReplaceExistingComment === 'true'
   core.info(`[init] replace_existing_comment: ${replaceExistingComment}`)
 
+  // skip_comment_if_no_issues=true suppresses the PR comment but does not
+  // suppress action outputs or the job summary — callers still get the review
+  // body via outputs and the summary is always written for observability.
   const rawSkipCommentIfNoIssues = core.getInput('skip_comment_if_no_issues')
   if (rawSkipCommentIfNoIssues && rawSkipCommentIfNoIssues !== 'true' && rawSkipCommentIfNoIssues !== 'false') {
     core.warning(`[init] skip_comment_if_no_issues: unrecognised value "${rawSkipCommentIfNoIssues}" — treating as true (default). Use 'true' or 'false'.`)
@@ -69,6 +80,9 @@ export function readConfig(): ActionConfig {
   const skipCommentIfNoIssues = rawSkipCommentIfNoIssues !== 'false'
   core.info(`[init] skip_comment_if_no_issues: ${skipCommentIfNoIssues}`)
 
+  // maximum_response_tokens has no fixed input default; callers supply undefined
+  // and inference applies tier defaults: 4,096 for shallow reviews and 8,192 for
+  // deep reviews.  An explicit input value overrides both tier defaults.
   const rawMaxTokens = core.getInput('maximum_response_tokens')
   const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined
 
