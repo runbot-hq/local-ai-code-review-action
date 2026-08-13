@@ -29,7 +29,7 @@ async function run(): Promise<void> {
     // Returns before binary is ensured so title/body skips never touch the binary.
     const resolved = await resolveReviewContext(config)
 
-    if (resolved.skipReason) {
+    if (resolved.skipped) {
       core.info(resolved.skipReason)
       return
     }
@@ -43,6 +43,7 @@ async function run(): Promise<void> {
     core.info(`[step 1/5] Binary ready: ${bin}`)
 
     // Phase 2: resolve review scope, fetch changed files, emit step-2 logs.
+    // TypeScript knows resolved.headCommit is present here because resolved.skipped === false.
     const context = await resolveReviewFiles(resolved, config)
 
     if (context.skipReason) {

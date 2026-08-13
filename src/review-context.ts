@@ -5,21 +5,28 @@ import { reviewScopeForAction } from './scope'
 import type { ActionConfig } from './config'
 import type { ChangedFile } from './diff'
 
-// Phase-1 result: PR validated, skip checks done, head commit fetched.
-// Binary is ensured between phase 1 and phase 2 to preserve the original
-// step-1 / step-2 ordering without adding unnecessary API calls.
-export interface ResolvedContext {
+type HeadCommit = Awaited<
+  ReturnType<
+    ReturnType<typeof github.getOctokit>['rest']['repos']['getCommit']
+  >
+>['data']
+
+interface ContextBase {
   token: string
   owner: string
   repoName: string
   prNumber: number
   prTitle: string
   headSha: string
-  headCommit: Awaited<ReturnType<ReturnType<typeof github.getOctokit>['rest']['repos']['getCommit']>>['data']
   octokit: ReturnType<typeof github.getOctokit>
-  /** Set when the run should be skipped — caller logs this and returns early */
-  skipReason?: string
 }
+
+// Phase-1 result: PR validated, skip checks done.
+// Discriminated on `skipped` so TypeScript prevents passing a skipped context
+// into resolveReviewFiles() where headCommit would be absent.
+export type ResolvedContext =
+  | (ContextBase & { skipped: true;  skipReason: string })
+  | (ContextBase & { skipped: false; headCommit: HeadCommit })
 
 // Phase-2 result: scope resolved, files fetched, ready for inference.
 export interface ReviewContext {
@@ -62,6 +69,8 @@ export async function resolveReviewContext(
 
   const octokit = github.getOctokit(config.token)
 
+  const base: ContextBase = { token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit }
+
   // Title and body are checked before the API request; they are already present
   // in the webhook payload so this costs nothing and avoids an unnecessary call.
   const prBody = (pr.body as string) ?? ''
@@ -70,8 +79,8 @@ export async function resolveReviewContext(
     prBody.toLowerCase().includes(config.skipLabel)
   ) {
     return {
-      token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
-      headCommit: null as any,
+      ...base,
+      skipped: true,
       skipReason: `[init] Skip label "${config.skipLabel}" detected in title/body — skipping AI review.`,
     }
   }
@@ -90,20 +99,21 @@ export async function resolveReviewContext(
 
   if (headCommitMessage.includes(config.skipLabel)) {
     return {
-      token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit,
+      ...base,
+      skipped: true,
       skipReason: `[init] Skip label "${config.skipLabel}" detected in commit message — skipping AI review.`,
     }
   }
   core.info('[init] skip_review_label: not found — proceeding with review')
 
-  return { token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit }
+  return { ...base, skipped: false, headCommit }
 }
 
 // Phase 2: determine review scope, fetch files (reusing the head commit for
 // synchronize), and emit step-2 logs. Runs after ensureBinary() so step-1
 // logs always precede step-2 logs, matching the original execution order.
 export async function resolveReviewFiles(
-  resolved: ResolvedContext,
+  resolved: ResolvedContext & { skipped: false },
   config: ActionConfig
 ): Promise<ReviewContext> {
   const { token, owner, repoName, prNumber, prTitle, headSha, headCommit, octokit } = resolved
