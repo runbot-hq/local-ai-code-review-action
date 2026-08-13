@@ -30721,7 +30721,22 @@ async function run() {
     try {
         core.info('=== local-ai-code-review-action starting ===');
         const config = (0, config_1.readConfig)();
-        const context = await (0, review_context_1.resolveReviewContext)(config);
+        // Phase 1: validate PR context, run skip-label checks, fetch head commit.
+        // Returns before binary is ensured so title/body skips never touch the binary.
+        const resolved = await (0, review_context_1.resolveReviewContext)(config);
+        if (resolved.skipReason) {
+            core.info(resolved.skipReason);
+            return;
+        }
+        // ensureBinary() downloads or locates the local-ai-cli binary and returns
+        // its path. Placed here (after phase 1, before phase 2) to preserve the
+        // original step-1 / step-2 log ordering: binary readiness is established
+        // before scope resolution and file fetching begin.
+        core.info('[step 1/5] Ensuring local-ai-cli binary...');
+        const bin = await (0, binary_1.ensureBinary)(config.token);
+        core.info(`[step 1/5] Binary ready: ${bin}`);
+        // Phase 2: resolve review scope, fetch changed files, emit step-2 logs.
+        const context = await (0, review_context_1.resolveReviewFiles)(resolved, config);
         if (context.skipReason) {
             core.info(context.skipReason);
             return;
@@ -31261,10 +31276,13 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.resolveReviewContext = resolveReviewContext;
+exports.resolveReviewFiles = resolveReviewFiles;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const github_1 = __nccwpck_require__(9248);
 const scope_1 = __nccwpck_require__(7311);
+// Phase 1: validate PR context, check title/body/commit-message skip labels,
+// and fetch the head commit (reused in phase 2 for synchronize scope).
 async function resolveReviewContext(config) {
     const ctx = github.context;
     if (!ctx.payload.pull_request) {
@@ -31283,28 +31301,42 @@ async function resolveReviewContext(config) {
     }
     core.info(`[init] PR: #${prNumber} "${prTitle}" in ${owner}/${repoName}`);
     const octokit = github.getOctokit(config.token);
-    const base = {
-        token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
-    };
     // Title and body are checked before the API request; they are already present
     // in the webhook payload so this costs nothing and avoids an unnecessary call.
     const prBody = pr.body ?? '';
     if (prTitle.toLowerCase().includes(config.skipLabel) ||
         prBody.toLowerCase().includes(config.skipLabel)) {
-        return { ...base, files: [], skipReason: `[init] Skip label "${config.skipLabel}" detected in title/body — skipping AI review.` };
+        return {
+            token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit,
+            headCommit: null,
+            skipReason: `[init] Skip label "${config.skipLabel}" detected in title/body — skipping AI review.`,
+        };
     }
     core.info(`[init] Fetching head commit message for skip check (sha: ${headSha})...`);
-    // The commit response is reused below for head-commit file selection, so we
-    // keep a reference to the full response data rather than discarding it.
+    // The commit response is reused in phase 2 for head-commit file selection,
+    // avoiding a second API call for synchronize events.
     const commitResponse = await (0, github_1.withRetry)('fetch-head-commit', () => octokit.rest.repos.getCommit({ owner, repo: repoName, ref: headSha, per_page: 100 }));
     const headCommit = commitResponse.data;
     const headCommitMessage = (headCommit.commit.message ?? '').toLowerCase();
     core.info(`[init] Head commit message: ${headCommitMessage.slice(0, 120)}${headCommitMessage.length > 120 ? '…' : ''}`);
     if (headCommitMessage.includes(config.skipLabel)) {
-        return { ...base, files: [], skipReason: `[init] Skip label "${config.skipLabel}" detected in commit message — skipping AI review.` };
+        return {
+            token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit,
+            skipReason: `[init] Skip label "${config.skipLabel}" detected in commit message — skipping AI review.`,
+        };
     }
     core.info('[init] skip_review_label: not found — proceeding with review');
-    // Resolve scope and fetch files
+    return { token: config.token, owner, repoName, prNumber, prTitle, headSha, octokit, headCommit };
+}
+// Phase 2: determine review scope, fetch files (reusing the head commit for
+// synchronize), and emit step-2 logs. Runs after ensureBinary() so step-1
+// logs always precede step-2 logs, matching the original execution order.
+async function resolveReviewFiles(resolved, config) {
+    const { token, owner, repoName, prNumber, prTitle, headSha, headCommit, octokit } = resolved;
+    const base = {
+        token, owner, repoName, prNumber, prTitle, headSha, octokit,
+    };
+    const ctx = github.context;
     const eventAction = ctx.payload.action;
     const reviewScope = (0, scope_1.reviewScopeForAction)(eventAction, config.alwaysReviewEntirePR);
     core.info(`[step 2/5] always_review_entire_pr=${config.alwaysReviewEntirePR}, ` +
