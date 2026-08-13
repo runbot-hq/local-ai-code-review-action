@@ -72,9 +72,20 @@ export function readConfig(): ActionConfig {
   const rawMaxTokens = core.getInput('maximum_response_tokens')
   const maximumResponseTokensOverride = rawMaxTokens ? parseInt(rawMaxTokens, 10) : undefined
 
-  const rawSkipLabel    = core.getInput('skip_review_label')
+  const rawSkipLabel = core.getInput('skip_review_label')
   const skipLabelTrimmed = rawSkipLabel.trim()
-  const skipLabel = (skipLabelTrimmed || '[skip ai review]').toLowerCase()
+
+  if (!skipLabelTrimmed && rawSkipLabel.length > 0) {
+    core.warning(
+      '[init] skip_review_label is whitespace-only — ' +
+      'falling back to default "[skip ai review]"'
+    )
+  }
+
+  const skipLabel = (
+    skipLabelTrimmed ||
+    '[skip ai review]'
+  ).toLowerCase()
   core.info(`[init] skip_review_label: "${skipLabel}"`)
 
   const rawAlwaysReviewEntirePR = core.getInput('always_review_entire_pr')
