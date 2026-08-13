@@ -31160,8 +31160,6 @@ function isParsedReview(value) {
 // and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
 // on an otherwise all-clear PR (see index.ts noIssuesFound).
 //
-// Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
-// computation so the two can never disagree on what counts as a "real" file.
 // Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
 // Used to bound the top-level files[] array to the number of complete file
 // chunks included in the prompt, preventing the model from emitting the same
@@ -31182,6 +31180,8 @@ function buildReviewSchema(maxFiles) {
         },
     };
 }
+// Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
+// computation so the two can never disagree on what counts as a "real" file.
 function getRealFiles(review) {
     return review.files.filter((f) => f.filename?.trim().length > 0);
 }
