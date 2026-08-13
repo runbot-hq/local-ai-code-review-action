@@ -9,6 +9,8 @@
 //
 // Ported from review_commit_2.sh's FORMAT=json jq schema + jq -r renderer.
 
+import { REVIEW_COMMENT_MARKER, REVIEW_TITLE } from './constants'
+
 export const REVIEW_SCHEMA = {
   type: 'object',
   properties: {
@@ -199,10 +201,19 @@ export function getRealFiles(review: ParsedReview): ReviewFile[] {
 // review.files.length, so a response consisting entirely of hallucinated
 // blank-filename entries still renders the all-clear message rather than a
 // stray "### " block.
+// Wraps any review body string with the canonical marker and title that
+// every posted PR comment must begin with. Keeping this in the renderer
+// (rather than in posting.ts) ensures the PR comment, review_body output,
+// review_file artifact and any direct renderReviewMarkdown callers all
+// share the same canonical structure.
+function wrapReviewBody(body: string): string {
+  return [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', body].join('\n')
+}
+
 export function renderReviewMarkdown(review: ParsedReview): string {
   const realFiles = getRealFiles(review)
   if (realFiles.length === 0) {
-    return '✅ No issues found in this PR.'
+    return wrapReviewBody('✅ No issues found in this PR.')
   }
 
   const blocks: string[] = []
@@ -220,5 +231,5 @@ export function renderReviewMarkdown(review: ParsedReview): string {
     }
     blocks.push(lines.join('\n'))
   }
-  return blocks.join('\n\n')
+  return wrapReviewBody(blocks.join('\n\n'))
 }
