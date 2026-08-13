@@ -30768,6 +30768,7 @@ async function run() {
         function buildDiffBlock(maxChars) {
             let diffBlock = '';
             let truncated = false;
+            let includedFileCount = 0;
             for (const f of files) {
                 if (!f.patch) {
                     core.info(`  skip ${f.filename} — no patch`);
@@ -30780,10 +30781,11 @@ async function run() {
                     break;
                 }
                 diffBlock += chunk;
+                includedFileCount += 1;
             }
-            return { diffBlock, truncated };
+            return { diffBlock, truncated, includedFileCount };
         }
-        let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS);
+        let { diffBlock, truncated, includedFileCount } = buildDiffBlock(MAX_PATCH_CHARS);
         core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`);
         if (!diffBlock) {
             core.info('[step 3/5] No patchable diff content — skipping review.');
@@ -30835,7 +30837,7 @@ async function run() {
         // shape, which is a much stronger anti-drift guarantee than prompt
         // instructions alone — the model cannot emit a changelog/summary if the
         // schema doesn't have a field for one.
-        const format = JSON.stringify(review_1.REVIEW_SCHEMA);
+        const format = JSON.stringify((0, review_1.buildReviewSchema)(includedFileCount));
         // Pass empty string for instructions so the binary does not also forward
         // them as a system prompt — they are already embedded in the user prompt above.
         core.info(`[step 4/5] Calling ${model} at ${baseUrl} (timeout: ${timeoutSeconds}s, think=${think}, num_ctx=${numCtx}, repeat_penalty=${repeatPenalty})...`);
@@ -30857,11 +30859,14 @@ async function run() {
                 // (complete file chunks only, no mid-patch slicing) and 50% of the
                 // output-token budget. The timeout is preserved unchanged.
                 const retryDiffLimit = Math.floor(diffBlock.length / 2);
-                const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock;
-                const usedFullDiffFallback = reducedRetryDiff.length === 0;
+                const reducedRetry = buildDiffBlock(retryDiffLimit);
+                const usedFullDiffFallback = reducedRetry.diffBlock.length === 0;
                 const retryDiffBlock = usedFullDiffFallback
                     ? diffBlock
-                    : reducedRetryDiff;
+                    : reducedRetry.diffBlock;
+                const retryFileCount = usedFullDiffFallback
+                    ? includedFileCount
+                    : reducedRetry.includedFileCount;
                 const retryMaxTokens = Math.floor(maximumResponseTokens / 2);
                 if (usedFullDiffFallback) {
                     core.warning(`[step 4/5] No complete file fits within the ${retryDiffLimit}-character ` +
@@ -30876,6 +30881,7 @@ async function run() {
                 core.info('[step 4/5] Attempt 2 (degraded)...');
                 rawReview = (0, cli_1.localAiCli)(bin, retryPrompt, {
                     ...cliOpts,
+                    format: JSON.stringify((0, review_1.buildReviewSchema)(retryFileCount)),
                     maximumResponseTokens: retryMaxTokens,
                 });
             }
@@ -30915,12 +30921,14 @@ async function run() {
         // below distinguishes the two so CI logs don't silently conflate them.
         let review;
         let noIssuesFound = false;
+        let structuredOutputValid = false;
         try {
             const parsed = JSON.parse(rawReview);
             if (!(0, review_1.isParsedReview)(parsed)) {
                 throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)');
             }
             review = (0, review_1.renderReviewMarkdown)(parsed);
+            structuredOutputValid = true;
             const realFiles = (0, review_1.getRealFiles)(parsed);
             noIssuesFound = realFiles.every((f) => f.issues.length === 0);
             const emptyFilesList = realFiles.length === 0;
@@ -30928,8 +30936,11 @@ async function run() {
             core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned no real per-file entries)' : ''}`);
         }
         catch (e) {
-            core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`);
-            review = `> ⚠️ Model did not return valid structured output — showing raw response.\n\n${rawReview}`;
+            core.warning(`[step 4/5] Failed to parse/render structured JSON output — ` +
+                `keeping raw response in logs and outputs only: ${String(e)}`);
+            review =
+                `> ⚠️ Model did not return valid structured output — ` +
+                    `showing raw response.\n\n${rawReview}`;
         }
         // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
         core.info('[step 5/5] Posting PR comment...');
@@ -30938,28 +30949,41 @@ async function run() {
         (0, github_1.networkDiag)('pre-post');
         const fullReview = review + constants_1.BOT_SIGNATURE;
         core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
-        // skip_comment_if_no_issues short-circuits ONLY the comment-posting side —
-        // outputs, review file, and job summary below are populated unconditionally
-        // so downstream steps relying on them behave identically either way.
-        const skipPosting = skipCommentIfNoIssues && noIssuesFound;
-        if (skipPosting) {
+        // Three-way branch on structured output validity and no-issues flag:
+        //
+        // 1. Invalid structured output — never post; never delete existing comments.
+        //    Malformed output must not replace a valid prior review with garbage, and
+        //    must not silently appear as a PR comment. Raw text goes to outputs/logs only.
+        //
+        // 2. Valid output, skip_comment_if_no_issues=true, noIssuesFound=true —
+        //    skip the new comment but still clean up stale bot comments so a PR that
+        //    had issues and then got fixed doesn't keep a stale "issues found" comment.
+        //
+        // 3. Valid output with issues — delete-then-replace (if replace_existing_comment=true)
+        //    or append (default). The full review history is preserved on append path.
+        const skipForNoIssues = skipCommentIfNoIssues && structuredOutputValid && noIssuesFound;
+        if (!structuredOutputValid) {
+            core.warning('[step 5/5] Structured output invalid — skipping PR comment; ' +
+                'preserving existing bot comments');
+        }
+        else if (skipForNoIssues) {
             core.info('[step 5/5] skip_comment_if_no_issues=true and no issues found — skipping comment post');
-        }
-        if (skipPosting && replaceExistingComment) {
-            // Even when skipping the new comment, still clean up prior bot comments —
-            // otherwise a PR that had issues, then got fixed, would keep showing a
-            // stale "issues found" comment forever with no replacement.
-            const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
-            for (const id of existingIds) {
-                core.info(`[step 5/5] deleting stale bot comment id=${id}...`);
-                await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
-                core.info(`[step 5/5] deleted stale bot comment id=${id}`);
+            if (replaceExistingComment) {
+                // Even when skipping the new comment, still clean up prior bot comments —
+                // otherwise a PR that had issues, then got fixed, would keep showing a
+                // stale "issues found" comment forever with no replacement.
+                const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
+                for (const id of existingIds) {
+                    core.info(`[step 5/5] deleting stale bot comment id=${id}...`);
+                    await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
+                    core.info(`[step 5/5] deleted stale bot comment id=${id}`);
+                }
+                if (existingIds.length === 0) {
+                    core.info(`[step 5/5] no previous bot comments to delete`);
+                }
             }
-            if (existingIds.length === 0) {
-                core.info(`[step 5/5] no previous bot comments to delete`);
-            }
         }
-        else if (!skipPosting) {
+        else {
             if (replaceExistingComment) {
                 // Delete ALL existing bot comments before posting a fresh one.
                 //
@@ -31063,6 +31087,7 @@ run();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.REVIEW_SCHEMA = void 0;
 exports.isParsedReview = isParsedReview;
+exports.buildReviewSchema = buildReviewSchema;
 exports.getRealFiles = getRealFiles;
 exports.renderReviewMarkdown = renderReviewMarkdown;
 exports.REVIEW_SCHEMA = {
@@ -31153,6 +31178,26 @@ function isParsedReview(value) {
 // and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
 // on an otherwise all-clear PR (see index.ts noIssuesFound).
 //
+// Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
+// Used to bound the top-level files[] array to the number of complete file
+// chunks included in the prompt, preventing the model from emitting the same
+// valid file object repeatedly until the response reaches the output-token
+// limit and becomes truncated JSON.
+//
+// Do not mutate the exported REVIEW_SCHEMA constant — always construct a new
+// object so callers that read REVIEW_SCHEMA directly are unaffected.
+function buildReviewSchema(maxFiles) {
+    return {
+        ...exports.REVIEW_SCHEMA,
+        properties: {
+            ...exports.REVIEW_SCHEMA.properties,
+            files: {
+                ...exports.REVIEW_SCHEMA.properties.files,
+                maxItems: maxFiles,
+            },
+        },
+    };
+}
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
 function getRealFiles(review) {

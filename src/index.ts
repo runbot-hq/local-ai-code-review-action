@@ -8,7 +8,7 @@ import { selectTier } from './tier'
 import { ensureBinary } from './binary'
 import { localAiCli, isFatalError, isEmptyThinkExhaust } from './cli'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
-import { REVIEW_SCHEMA, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
+import { buildReviewSchema, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -278,9 +278,14 @@ async function run(): Promise<void> {
 
     function buildDiffBlock(
       maxChars: number
-    ): { diffBlock: string; truncated: boolean } {
+    ): {
+      diffBlock: string
+      truncated: boolean
+      includedFileCount: number
+    } {
       let diffBlock = ''
       let truncated = false
+      let includedFileCount = 0
       for (const f of files) {
         if (!f.patch) {
           core.info(`  skip ${f.filename} — no patch`)
@@ -293,11 +298,12 @@ async function run(): Promise<void> {
           break
         }
         diffBlock += chunk
+        includedFileCount += 1
       }
-      return { diffBlock, truncated }
+      return { diffBlock, truncated, includedFileCount }
     }
 
-    let { diffBlock, truncated } = buildDiffBlock(MAX_PATCH_CHARS)
+    let { diffBlock, truncated, includedFileCount } = buildDiffBlock(MAX_PATCH_CHARS)
     core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`)
 
     if (!diffBlock) {
@@ -353,7 +359,7 @@ async function run(): Promise<void> {
     // shape, which is a much stronger anti-drift guarantee than prompt
     // instructions alone — the model cannot emit a changelog/summary if the
     // schema doesn't have a field for one.
-    const format = JSON.stringify(REVIEW_SCHEMA)
+    const format = JSON.stringify(buildReviewSchema(includedFileCount))
 
     // Pass empty string for instructions so the binary does not also forward
     // them as a system prompt — they are already embedded in the user prompt above.
@@ -373,12 +379,15 @@ async function run(): Promise<void> {
         // (complete file chunks only, no mid-patch slicing) and 50% of the
         // output-token budget. The timeout is preserved unchanged.
         const retryDiffLimit = Math.floor(diffBlock.length / 2)
-        const reducedRetryDiff = buildDiffBlock(retryDiffLimit).diffBlock
+        const reducedRetry = buildDiffBlock(retryDiffLimit)
 
-        const usedFullDiffFallback = reducedRetryDiff.length === 0
+        const usedFullDiffFallback = reducedRetry.diffBlock.length === 0
         const retryDiffBlock = usedFullDiffFallback
           ? diffBlock
-          : reducedRetryDiff
+          : reducedRetry.diffBlock
+        const retryFileCount = usedFullDiffFallback
+          ? includedFileCount
+          : reducedRetry.includedFileCount
 
         const retryMaxTokens = Math.floor(maximumResponseTokens / 2)
 
@@ -404,6 +413,7 @@ async function run(): Promise<void> {
 
         rawReview = localAiCli(bin, retryPrompt, {
           ...cliOpts,
+          format: JSON.stringify(buildReviewSchema(retryFileCount)),
           maximumResponseTokens: retryMaxTokens,
         })
       }
@@ -444,20 +454,27 @@ async function run(): Promise<void> {
     // below distinguishes the two so CI logs don't silently conflate them.
     let review: string
     let noIssuesFound = false
+    let structuredOutputValid = false
     try {
       const parsed = JSON.parse(rawReview)
       if (!isParsedReview(parsed)) {
         throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)')
       }
       review = renderReviewMarkdown(parsed)
+      structuredOutputValid = true
       const realFiles = getRealFiles(parsed)
       noIssuesFound = realFiles.every((f) => f.issues.length === 0)
       const emptyFilesList = realFiles.length === 0
       core.info(`[step 4/5] Rendered ${realFiles.length} file section(s) from structured output (${parsed.files.length - realFiles.length} hallucinated blank-filename entr${parsed.files.length - realFiles.length === 1 ? 'y' : 'ies'} dropped)`)
       core.info(`[step 4/5] noIssuesFound=${noIssuesFound}${emptyFilesList ? ' (model returned no real per-file entries)' : ''}`)
     } catch (e) {
-      core.warning(`[step 4/5] Failed to parse/render structured JSON output — falling back to raw text: ${String(e)}`)
-      review = `> ⚠️ Model did not return valid structured output — showing raw response.\n\n${rawReview}`
+      core.warning(
+        `[step 4/5] Failed to parse/render structured JSON output — ` +
+        `keeping raw response in logs and outputs only: ${String(e)}`
+      )
+      review =
+        `> ⚠️ Model did not return valid structured output — ` +
+        `showing raw response.\n\n${rawReview}`
     }
 
     // 9. Post comment — each sub-step wrapped in withRetry for EPIPE/ECONNRESET resilience
@@ -470,32 +487,47 @@ async function run(): Promise<void> {
     const fullReview = review + BOT_SIGNATURE
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`)
 
-    // skip_comment_if_no_issues short-circuits ONLY the comment-posting side —
-    // outputs, review file, and job summary below are populated unconditionally
-    // so downstream steps relying on them behave identically either way.
-    const skipPosting = skipCommentIfNoIssues && noIssuesFound
-    if (skipPosting) {
-      core.info('[step 5/5] skip_comment_if_no_issues=true and no issues found — skipping comment post')
-    }
+    // Three-way branch on structured output validity and no-issues flag:
+    //
+    // 1. Invalid structured output — never post; never delete existing comments.
+    //    Malformed output must not replace a valid prior review with garbage, and
+    //    must not silently appear as a PR comment. Raw text goes to outputs/logs only.
+    //
+    // 2. Valid output, skip_comment_if_no_issues=true, noIssuesFound=true —
+    //    skip the new comment but still clean up stale bot comments so a PR that
+    //    had issues and then got fixed doesn't keep a stale "issues found" comment.
+    //
+    // 3. Valid output with issues — delete-then-replace (if replace_existing_comment=true)
+    //    or append (default). The full review history is preserved on append path.
+    const skipForNoIssues = skipCommentIfNoIssues && structuredOutputValid && noIssuesFound
 
-    if (skipPosting && replaceExistingComment) {
-      // Even when skipping the new comment, still clean up prior bot comments —
-      // otherwise a PR that had issues, then got fixed, would keep showing a
-      // stale "issues found" comment forever with no replacement.
-      const existingIds = await withRetry('find-comments', () =>
-        findAllBotCommentIds(octokit, owner, repoName, prNumber)
+    if (!structuredOutputValid) {
+      core.warning(
+        '[step 5/5] Structured output invalid — skipping PR comment; ' +
+        'preserving existing bot comments'
       )
-      for (const id of existingIds) {
-        core.info(`[step 5/5] deleting stale bot comment id=${id}...`)
-        await withRetry(`delete-comment-${id}`, () =>
-          octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id })
+    } else if (skipForNoIssues) {
+      core.info('[step 5/5] skip_comment_if_no_issues=true and no issues found — skipping comment post')
+
+      if (replaceExistingComment) {
+        // Even when skipping the new comment, still clean up prior bot comments —
+        // otherwise a PR that had issues, then got fixed, would keep showing a
+        // stale "issues found" comment forever with no replacement.
+        const existingIds = await withRetry('find-comments', () =>
+          findAllBotCommentIds(octokit, owner, repoName, prNumber)
         )
-        core.info(`[step 5/5] deleted stale bot comment id=${id}`)
+        for (const id of existingIds) {
+          core.info(`[step 5/5] deleting stale bot comment id=${id}...`)
+          await withRetry(`delete-comment-${id}`, () =>
+            octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id })
+          )
+          core.info(`[step 5/5] deleted stale bot comment id=${id}`)
+        }
+        if (existingIds.length === 0) {
+          core.info(`[step 5/5] no previous bot comments to delete`)
+        }
       }
-      if (existingIds.length === 0) {
-        core.info(`[step 5/5] no previous bot comments to delete`)
-      }
-    } else if (!skipPosting) {
+    } else {
       if (replaceExistingComment) {
         // Delete ALL existing bot comments before posting a fresh one.
         //
@@ -539,7 +571,6 @@ async function run(): Promise<void> {
 
       core.info(`[step 5/5] Review posted: ${comment.html_url}`)
     }
-
     core.setOutput('review_body', fullReview)
 
     // Write review to a temp file so the post: script can cat it cleanly.

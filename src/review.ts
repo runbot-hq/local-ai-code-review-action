@@ -109,6 +109,27 @@ export function isParsedReview(value: unknown): value is ParsedReview {
 // and its non-empty issues array incorrectly defeats skip_comment_if_no_issues
 // on an otherwise all-clear PR (see index.ts noIssuesFound).
 //
+// Returns a copy of REVIEW_SCHEMA with files.maxItems set to maxFiles.
+// Used to bound the top-level files[] array to the number of complete file
+// chunks included in the prompt, preventing the model from emitting the same
+// valid file object repeatedly until the response reaches the output-token
+// limit and becomes truncated JSON.
+//
+// Do not mutate the exported REVIEW_SCHEMA constant — always construct a new
+// object so callers that read REVIEW_SCHEMA directly are unaffected.
+export function buildReviewSchema(maxFiles: number) {
+  return {
+    ...REVIEW_SCHEMA,
+    properties: {
+      ...REVIEW_SCHEMA.properties,
+      files: {
+        ...REVIEW_SCHEMA.properties.files,
+        maxItems: maxFiles,
+      },
+    },
+  } as const
+}
+
 // Applied uniformly by both renderReviewMarkdown and index.ts's noIssuesFound
 // computation so the two can never disagree on what counts as a "real" file.
 export function getRealFiles(review: ParsedReview): ReviewFile[] {
