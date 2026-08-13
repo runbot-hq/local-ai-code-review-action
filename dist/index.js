@@ -30323,6 +30323,7 @@ exports.buildDiffBlock = buildDiffBlock;
 function buildDiffBlock(files, maxChars) {
     let diffBlock = '';
     let truncated = false;
+    let truncatedAt;
     let includedFileCount = 0;
     const skippedFiles = [];
     for (const f of files) {
@@ -30334,12 +30335,19 @@ function buildDiffBlock(files, maxChars) {
             `\`\`\`diff\n${f.patch}\n\`\`\`\n\n`;
         if ((diffBlock + chunk).length > maxChars) {
             truncated = true;
+            truncatedAt = f.filename;
             break;
         }
         diffBlock += chunk;
         includedFileCount += 1;
     }
-    return { diffBlock, truncated, includedFileCount, skippedFiles };
+    return {
+        diffBlock,
+        truncated,
+        truncatedAt,
+        includedFileCount,
+        skippedFiles,
+    };
 }
 
 
@@ -30871,10 +30879,20 @@ async function runReviewInference(opts) {
     // Build diff block
     core.info('[step 3/5] Building diff block...');
     const MAX_PATCH_CHARS = 60000;
-    let { diffBlock, truncated, includedFileCount } = (0, diff_1.buildDiffBlock)(files, MAX_PATCH_CHARS);
-    core.info(`[step 3/5] Diff block: ${diffBlock.length} chars, truncated=${truncated}`);
+    const initialDiff = (0, diff_1.buildDiffBlock)(files, MAX_PATCH_CHARS);
+    let { diffBlock, truncated, truncatedAt, includedFileCount, skippedFiles, } = initialDiff;
+    for (const filename of skippedFiles) {
+        core.info(`  skip ${filename} — no patch`);
+    }
+    if (truncated && truncatedAt) {
+        core.warning(`[step 3/5] Diff truncated at ` +
+            `${MAX_PATCH_CHARS} chars — ` +
+            `stopping at ${truncatedAt}`);
+    }
+    core.info(`[step 3/5] Diff block: ` +
+        `${diffBlock.length} chars, ` +
+        `truncated=${truncated}`);
     if (!diffBlock) {
-        // Caller will check for empty markdown and short-circuit
         return {
             valid: false,
             raw: '',
@@ -30889,7 +30907,6 @@ async function runReviewInference(opts) {
     if (truncated) {
         diffBlock += `\n> ⚠️ Diff truncated — ${files.length} files changed, showing partial diff only.\n`;
     }
-    // Build prompt
     const instructions = [
         'You are a senior software engineer performing a concise, constructive code review.',
         'Review ONLY the diff below. Focus on: bugs, security issues, best practices, performance, and code clarity.',
@@ -30934,11 +30951,16 @@ async function runReviewInference(opts) {
             rawReview = (0, cli_1.localAiCli)(bin, prompt, { ...cliOpts, think: false });
         }
         else {
-            // Degraded retry: use at most 50% of the attempt-1 diff characters
-            // (complete file chunks only, no mid-patch slicing) and 50% of the
-            // output-token budget. The timeout is preserved unchanged.
             const retryDiffLimit = Math.floor(diffBlock.length / 2);
             const reducedRetry = (0, diff_1.buildDiffBlock)(files, retryDiffLimit);
+            for (const filename of reducedRetry.skippedFiles) {
+                core.info(`  skip ${filename} — no patch`);
+            }
+            if (reducedRetry.truncated && reducedRetry.truncatedAt) {
+                core.warning(`[step 3/5] Diff truncated at ` +
+                    `${retryDiffLimit} chars — ` +
+                    `stopping at ${reducedRetry.truncatedAt}`);
+            }
             const usedFullDiffFallback = reducedRetry.diffBlock.length === 0;
             const retryDiffBlock = usedFullDiffFallback ? diffBlock : reducedRetry.diffBlock;
             const retryFileCount = usedFullDiffFallback ? includedFileCount : reducedRetry.includedFileCount;
@@ -30964,7 +30986,6 @@ async function runReviewInference(opts) {
     if (!rawReview)
         throw new Error('local-ai-cli returned empty output');
     core.info(`[step 4/5] Review complete (${rawReview.length} chars)`);
-    // Parse structured JSON and render
     try {
         const parsed = JSON.parse(rawReview);
         if (!(0, review_1.isParsedReview)(parsed)) {
@@ -31070,45 +31091,40 @@ async function publishReview(opts) {
     core.info(`[step 5/5] replace_existing_comment: ${replaceExistingComment}`);
     (0, github_1.networkDiag)('pre-post');
     core.info(`[step 5/5] full comment length: ${fullReview.length} chars`);
-    // Three-way branch on structured output validity and no-issues flag:
-    //
-    // 1. Invalid structured output — never post; never delete existing comments.
-    //    Malformed output must not replace a valid prior review with garbage, and
-    //    must not silently appear as a PR comment. Raw text goes to outputs/logs only.
-    //
-    // 2. Valid output, skip_comment_if_no_issues=true, noIssuesFound=true —
-    //    skip the new comment but still clean up stale bot comments so a PR that
-    //    had issues and then got fixed doesn’t keep a stale “issues found” comment.
-    //
-    // 3. Valid output with issues — delete-then-replace (if replace_existing_comment=true)
-    //    or append (default). The full review history is preserved on append.
     if (!result.valid) {
-        // Outputs and logs only. Never post or delete comments.
-        core.setOutput('review_body', fullReview);
-        return;
+        core.warning('[step 5/5] Structured output invalid — ' +
+            'skipping PR comment; preserving existing bot comments');
     }
-    if (skipCommentIfNoIssues && result.noIssuesFound) {
-        core.info('[step 5/5] skip_comment_if_no_issues=true and no issues found — skipping comment.');
-        // Even when skipping the new comment, still clean up prior bot comments —
-        // otherwise a PR that had issues, then got fixed, would keep showing a
-        // stale “issues found” comment forever with no replacement.
-        const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
-        for (const id of existingIds) {
-            core.info(`[step 5/5] deleting stale bot comment id=${id}...`);
-            await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
-            core.info(`[step 5/5] deleted stale bot comment id=${id}`);
-        }
-        if (existingIds.length === 0) {
-            core.info('[step 5/5] no previous bot comments to delete');
+    else if (skipCommentIfNoIssues &&
+        result.noIssuesFound) {
+        core.info('[step 5/5] skip_comment_if_no_issues=true and ' +
+            'no issues found — skipping comment post');
+        if (replaceExistingComment) {
+            const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
+            for (const id of existingIds) {
+                core.info(`[step 5/5] deleting stale bot comment id=${id}...`);
+                await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({
+                    owner,
+                    repo: repoName,
+                    comment_id: id,
+                }));
+                core.info(`[step 5/5] deleted stale bot comment id=${id}`);
+            }
+            if (existingIds.length === 0) {
+                core.info('[step 5/5] no previous bot comments to delete');
+            }
         }
     }
     else {
         if (replaceExistingComment) {
-            // Delete ALL existing bot comments before posting a fresh one.
             const existingIds = await (0, github_1.withRetry)('find-comments', () => (0, github_1.findAllBotCommentIds)(octokit, owner, repoName, prNumber));
             for (const id of existingIds) {
                 core.info(`[step 5/5] deleting bot comment id=${id}...`);
-                await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({ owner, repo: repoName, comment_id: id }));
+                await (0, github_1.withRetry)(`delete-comment-${id}`, () => octokit.rest.issues.deleteComment({
+                    owner,
+                    repo: repoName,
+                    comment_id: id,
+                }));
                 core.info(`[step 5/5] deleted bot comment id=${id}`);
             }
             if (existingIds.length === 0) {
@@ -31116,19 +31132,21 @@ async function publishReview(opts) {
             }
         }
         else {
-            core.info('[step 5/5] replace_existing_comment=false — preserving all prior bot comments');
+            core.info('[step 5/5] replace_existing_comment=false — ' +
+                'preserving all prior bot comments');
         }
-        core.info(`[step 5/5] calling createComment (body=${fullReview.length} chars)...`);
+        core.info(`[step 5/5] calling createComment ` +
+            `(body=${fullReview.length} chars)...`);
         const createResponse = await (0, github_1.withRetry)('create-comment', () => octokit.rest.issues.createComment({
             owner,
             repo: repoName,
             issue_number: prNumber,
             body: fullReview,
         }));
-        core.info(`[step 5/5] Review posted: ${createResponse.data.html_url}`);
+        core.info(`[step 5/5] Review posted: ` +
+            `${createResponse.data.html_url}`);
     }
     core.setOutput('review_body', fullReview);
-    // Write review to a temp file so the post: script can cat it cleanly.
     try {
         const runnerTemp = process.env.RUNNER_TEMP ?? os.tmpdir();
         const reviewFile = path.join(runnerTemp, `ai-review-${prNumber}-${Date.now()}.md`);
@@ -31138,15 +31156,21 @@ async function publishReview(opts) {
         core.info(`[step 5/5] Review file: ${reviewFile}`);
     }
     catch (e) {
-        core.warning(`[step 5/5] Could not write review file — review_file output will be absent: ${String(e)}`);
+        core.warning('[step 5/5] Could not write review file — ' +
+            'review_file output will be absent: ' +
+            String(e));
     }
     await core.summary
         .addHeading(`🤖 AI Code Review: PR #${prNumber}`)
         .addRaw(`**Model:** ${model}\n`)
-        .addRaw(`**Tier:** ${result.tier} (reviewable lines: ${result.reviewableLines})\n`)
-        .addRaw(`**Runner:** ${process.env.RUNNER_NAME ?? 'unknown'}\n`)
+        .addRaw(`**Tier:** ${result.tier} ` +
+        `(reviewable lines: ${result.reviewableLines})\n`)
+        .addRaw(`**Runner:** ` +
+        `${process.env.RUNNER_NAME ?? 'unknown'}\n`)
         .addRaw(`**Files reviewed:** ${context.files.length} ` +
-        `(${result.truncated ? 'diff truncated' : 'full diff'})\n\n`)
+        `(${result.truncated
+            ? 'diff truncated'
+            : 'full diff'})\n\n`)
         .addRaw(result.markdown)
         .write();
 }
