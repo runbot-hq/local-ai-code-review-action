@@ -10,13 +10,9 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { buildReviewSchema } from './review'
+import { reviewScopeForAction } from './scope'
 
-// ---------------------------------------------------------------------------
-// Pure scope-decision helper — mirrors the logic in index.ts exactly.
-// ---------------------------------------------------------------------------
-function reviewScope(eventAction: string): 'head-commit' | 'pull-request' {
-  return eventAction === 'synchronize' ? 'head-commit' : 'pull-request'
-}
+const reviewScope = reviewScopeForAction
 
 // ---------------------------------------------------------------------------
 // Pure buildDiffBlock re-implementation (mirrored from review.test.ts helper).

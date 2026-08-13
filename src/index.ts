@@ -9,6 +9,7 @@ import { ensureBinary } from './binary'
 import { localAiCli, isFatalError, isEmptyThinkExhaust } from './cli'
 import { withRetry, findAllBotCommentIds, networkDiag } from './github'
 import { buildReviewSchema, isParsedReview, renderReviewMarkdown, getRealFiles } from './review'
+import { reviewScopeForAction } from './scope'
 
 // ---------------------------------------------------------------------------
 // Main
@@ -244,10 +245,7 @@ async function run(): Promise<void> {
     }
 
     const eventAction = github.context.payload.action
-    const reviewScope =
-      eventAction === 'synchronize'
-        ? 'head-commit'
-        : 'pull-request'
+    const reviewScope = reviewScopeForAction(eventAction)
 
     let files: ReviewFile[]
 
