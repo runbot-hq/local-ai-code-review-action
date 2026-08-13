@@ -265,7 +265,7 @@ async function run(): Promise<void> {
         `(${files.length} file(s))`
       )
     } else {
-      const {  prFiles } = await withRetry('fetch-pr-files', () =>
+      const prResponse = await withRetry('fetch-pr-files', () =>
         octokit.rest.pulls.listFiles({
           owner,
           repo: repoName,
@@ -274,7 +274,7 @@ async function run(): Promise<void> {
         })
       )
 
-      files = prFiles.map((file) => ({
+      files = prResponse.data.map((file) => ({
         filename: file.filename,
         status: file.status,
         additions: file.additions,
