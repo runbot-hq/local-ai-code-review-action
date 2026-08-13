@@ -30203,16 +30203,18 @@ const core = __importStar(__nccwpck_require__(7484));
 const os = __importStar(__nccwpck_require__(857));
 const scope_1 = __nccwpck_require__(7311);
 function readConfig() {
+    // Emit diagnostics before the token check so they appear in the log even
+    // when GITHUB_TOKEN is absent — otherwise the throw swallows all context.
+    core.info(`[init] Node version: ${process.version}`);
+    core.info(`[init] Platform: ${process.platform} ${process.arch}`);
+    core.info(`[init] HOME: ${os.homedir()}`);
+    core.info(`[init] Runner: ${process.env.RUNNER_NAME ?? 'unknown'}`);
     if (core.getInput('debug') === 'true')
         process.env.ACTIONS_STEP_DEBUG = '1';
     const token = process.env.GITHUB_TOKEN;
     if (!token)
         throw new Error('GITHUB_TOKEN is not set — add `env: GITHUB_TOKEN: ${{ github.token }}` to your workflow step.');
     core.info('[init] GITHUB_TOKEN: present');
-    core.info(`[init] Node version: ${process.version}`);
-    core.info(`[init] Platform: ${process.platform} ${process.arch}`);
-    core.info(`[init] HOME: ${os.homedir()}`);
-    core.info(`[init] Runner: ${process.env.RUNNER_NAME ?? 'unknown'}`);
     const model = core.getInput('model') || 'qwen3.5:9b';
     const baseUrl = core.getInput('base_url') || 'http://localhost:11434';
     const temperature = parseFloat(core.getInput('temperature') || '0.2');
@@ -30724,6 +30726,10 @@ async function run() {
             core.info(context.skipReason);
             return;
         }
+        // ensureBinary() downloads or locates the local-ai-cli binary and returns
+        // its path. The binary is committed as dist/index.js is NOT the entrypoint
+        // here — this action runs via a pre-built Node bundle (dist/index.js) which
+        // shells out to the local-ai-cli binary for inference.
         core.info('[step 1/5] Ensuring local-ai-cli binary...');
         const bin = await (0, binary_1.ensureBinary)(config.token);
         core.info(`[step 1/5] Binary ready: ${bin}`);
@@ -30915,7 +30921,6 @@ async function runReviewInference(opts) {
             tier,
             reviewableLines,
             truncated,
-            filesReviewed: includedFileCount,
         };
     }
     if (truncated) {
@@ -31033,7 +31038,6 @@ async function runReviewInference(opts) {
             tier,
             reviewableLines,
             truncated,
-            filesReviewed: includedFileCount,
         };
     }
     catch (e) {
@@ -31051,7 +31055,6 @@ async function runReviewInference(opts) {
             tier,
             reviewableLines,
             truncated,
-            filesReviewed: includedFileCount,
         };
     }
 }
