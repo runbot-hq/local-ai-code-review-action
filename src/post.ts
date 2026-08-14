@@ -9,7 +9,7 @@ import { execFileSync } from 'child_process'
 //
 // post-if: success() in action.yml ensures this only runs when the main
 // step succeeded (i.e. a review was actually posted and the file written).
-async function post(): Promise<void> {
+function post(): void {
   const reviewFile = core.getState('review_file')
   if (!reviewFile) {
     core.info('[post] review_file state not set — review was skipped or file write failed, nothing to display')
@@ -28,4 +28,4 @@ async function post(): Promise<void> {
   }
 }
 
-post()
+void post()

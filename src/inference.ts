@@ -61,13 +61,8 @@ export async function runReviewInference(
   const MAX_PATCH_CHARS = 60_000
   const initialDiff = buildDiffBlock(files, MAX_PATCH_CHARS)
 
-  let {
-    diffBlock,
-    truncated,
-    truncatedAt,
-    includedFileCount,
-    skippedFiles,
-  } = initialDiff
+  let diffBlock = initialDiff.diffBlock
+  const { truncated, truncatedAt, includedFileCount, skippedFiles } = initialDiff
 
   for (const filename of skippedFiles) {
     core.info(`  skip ${filename} — no patch`)
@@ -143,7 +138,7 @@ export async function runReviewInference(
     think,
   }
 
-  let rawReview = ''
+  let rawReview: string
   try {
     rawReview = localAiCli(bin, prompt, cliOpts)
   } catch (e) {
@@ -207,7 +202,7 @@ export async function runReviewInference(
   core.info(`[step 4/5] Review complete (${rawReview.length} chars)`)
 
   try {
-    const parsed = JSON.parse(rawReview)
+    const parsed: unknown = JSON.parse(rawReview)
     if (!isParsedReview(parsed)) {
       throw new Error('parsed JSON did not match expected review shape (missing/invalid "files" array)')
     }

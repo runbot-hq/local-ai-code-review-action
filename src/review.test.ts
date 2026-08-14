@@ -9,7 +9,7 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { REVIEW_SCHEMA, buildReviewSchema, getRealFiles, renderReviewMarkdown } from './review'
 import { REVIEW_TITLE } from './constants'
-import type { ParsedReview, ReviewFile } from './review'
+import type { ParsedReview } from './review'
 import { buildDiffBlock } from './diff'
 import type { ChangedFile } from './diff'
 

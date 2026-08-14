@@ -54,12 +54,12 @@ export async function resolveReviewContext(
     )
   }
 
-  const pr        = ctx.payload.pull_request
-  const prNumber  = pr.number as number
-  const prTitle   = (pr.title as string) ?? ''
+  const pr        = ctx.payload.pull_request as { number: number; title: string; body: string | null; head: { sha: string } }
+  const prNumber  = pr.number
+  const prTitle   = pr.title ?? ''
   // payload.head_commit is unavailable on pull_request events; the head SHA
   // must be read from pr.head.sha instead.
-  const headSha   = pr.head.sha as string
+  const headSha = pr.head.sha
   const repo      = process.env.GITHUB_REPOSITORY ?? ''
   const [owner, repoName] = repo.split('/')
   if (!owner || !repoName) {

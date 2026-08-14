@@ -6,6 +6,7 @@
   "scripts": {
     "build": "ncc build src/index.ts --license licenses.txt && ncc build src/post.ts -o dist-post --license licenses.txt && mv dist-post/index.js dist/post.js && rm -rf dist-post",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
     "test": "tsc --noEmit --project tsconfig.json && tsc --module nodenext --moduleResolution nodenext --outDir /tmp/lairev-test-out --rootDir src --target ES2022 src/review.ts src/scope.ts src/review.test.ts src/scope.test.ts && node --test /tmp/lairev-test-out/review.test.js /tmp/lairev-test-out/scope.test.js"
   },
   "dependencies": {
@@ -13,8 +14,11 @@
     "@actions/github": "^6.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.0.0",
     "@vercel/ncc": "^0.38.1",
-    "typescript": "^5.4.0"
+    "eslint": "^10.8.1",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.67.0"
   }
 }

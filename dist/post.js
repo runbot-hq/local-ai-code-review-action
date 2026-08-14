@@ -25692,7 +25692,7 @@ const child_process_1 = __nccwpck_require__(5317);
 //
 // post-if: success() in action.yml ensures this only runs when the main
 // step succeeded (i.e. a review was actually posted and the file written).
-async function post() {
+function post() {
     const reviewFile = core.getState('review_file');
     if (!reviewFile) {
         core.info('[post] review_file state not set — review was skipped or file write failed, nothing to display');
@@ -25711,7 +25711,7 @@ async function post() {
         core.warning(`[post] Failed to cat review file: ${String(e)}`);
     }
 }
-post();
+void post();
 
 
 /***/ }),

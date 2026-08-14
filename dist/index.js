@@ -30626,7 +30626,7 @@ function httpsGetJson(url, token, redirectsLeft = 5) {
                     resolve(JSON.parse(body));
                 }
                 catch (e) {
-                    reject(new Error(`Failed to parse JSON from ${url}: ${e}`));
+                    reject(new Error(`Failed to parse JSON from ${url}: ${String(e)}`));
                 }
             });
         });
@@ -30774,7 +30774,7 @@ async function run() {
         core.setFailed(sanitizeForRunner(error instanceof Error ? error.message : String(error)));
     }
 }
-run();
+void run();
 
 
 /***/ }),
@@ -30837,7 +30837,8 @@ async function runReviewInference(opts) {
     core.info('[step 3/5] Building diff block...');
     const MAX_PATCH_CHARS = 60000;
     const initialDiff = (0, diff_1.buildDiffBlock)(files, MAX_PATCH_CHARS);
-    let { diffBlock, truncated, truncatedAt, includedFileCount, skippedFiles, } = initialDiff;
+    let diffBlock = initialDiff.diffBlock;
+    const { truncated, truncatedAt, includedFileCount, skippedFiles } = initialDiff;
     for (const filename of skippedFiles) {
         core.info(`  skip ${filename} — no patch`);
     }
@@ -30898,7 +30899,7 @@ async function runReviewInference(opts) {
         timeoutSeconds,
         think,
     };
-    let rawReview = '';
+    let rawReview;
     try {
         rawReview = (0, cli_1.localAiCli)(bin, prompt, cliOpts);
     }

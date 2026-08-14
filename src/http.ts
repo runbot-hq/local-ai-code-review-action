@@ -19,7 +19,7 @@ export function httpsGetJson(url: string, token?: string, redirectsLeft = 5): Pr
       let body = ''
       res.on('data', (chunk: string) => { body += chunk })
       res.on('end', () => {
-        try { resolve(JSON.parse(body)) } catch (e) { reject(new Error(`Failed to parse JSON from ${url}: ${e}`)) }
+        try { resolve(JSON.parse(body) as Record<string, unknown>) } catch (e) { reject(new Error(`Failed to parse JSON from ${url}: ${String(e)}`)) }
       })
     })
     req.on('error', reject)
