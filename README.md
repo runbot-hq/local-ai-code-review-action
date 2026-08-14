@@ -161,11 +161,19 @@ The `review_body`/`review_file` outputs and job summary are populated either way
 | `codegeex4:9b` | Dedicated code review, 89K context window |
 | `qwen3.5:4b` | Fastest, lowest RAM usage |
 
-## Review signature
+## Review format
 
-Every review comment ends with:
+Every review comment begins with:
 
-> 🤖 AI code review by [github.com/runbot-hq/run-bot](https://github.com/runbot-hq/run-bot)
+```
+## 🤖 RunBot Review
+```
+
+And ends with:
+
+```
+Review by [RunBot](https://github.com/runbot-hq/run-bot)
+```
 
 ## Contributing
 
