@@ -15,7 +15,7 @@ export default tseslint.config(
   },
   {
     // Test files: relax rules that are noisy in test contexts
-    files: ['src/*.test.ts'],
+    files: ['src/**/*.test.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
