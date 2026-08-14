@@ -30306,18 +30306,17 @@ function readConfig() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.NON_CODE_PATTERNS = exports.REVIEW_TITLE = exports.REVIEW_COMMENT_MARKER = exports.BOT_SIGNATURE = exports.BOT_SIGNATURE_SEARCH_KEY = void 0;
-// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
-// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
-// so it can be matched reliably with String.includes()).
-// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
-// Do NOT merge them — if the footer text ever changes, search would break
-// for comments posted under the old format.
-exports.BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
-exports.BOT_SIGNATURE = `\n\n---\n> 🤖 [${exports.BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`;
-// Hidden marker and visible heading prepended to every rendered review.
-// Kept as constants so rendering and tests share one canonical definition.
-exports.REVIEW_COMMENT_MARKER = '<!-- runbot-review-summary-comment -->';
+exports.NON_CODE_PATTERNS = exports.REVIEW_TITLE = exports.BOT_SIGNATURE = exports.LEGACY_BOT_SIGNATURE_SEARCH_KEY = void 0;
+// LEGACY_BOT_SIGNATURE_SEARCH_KEY is kept for backward compatibility only.
+// It identifies comments posted before the visible title was introduced.
+// Do NOT use it as the primary deduplication key — footer wording is
+// presentation and will likely change again. Keep for at least one release
+// so replace_existing_comment can still clean up pre-title comments.
+exports.LEGACY_BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot';
+exports.BOT_SIGNATURE = `\n\n---\nReview by [RunBot](https://github.com/runbot-hq/run-bot)`;
+// Visible heading prepended to every rendered review.
+// Primary deduplication key: new comments are identified by startsWith(REVIEW_TITLE).
+// Kept as a constant so rendering and tests share one canonical definition.
 exports.REVIEW_TITLE = '## 🤖 RunBot Review';
 // File extensions/names that carry no reviewable logic — excluded from the
 // reviewable-lines count used to select shallow vs deep review tier.
@@ -30531,7 +30530,13 @@ async function findAllBotCommentIds(octokit, owner, repo, prNumber) {
         });
         core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`);
         const botIds = comments
-            .filter(c => c.body?.includes(constants_1.BOT_SIGNATURE_SEARCH_KEY))
+            .filter(c => {
+            const body = c.body ?? '';
+            const authoredByBot = (c.user?.type === 'Bot') ||
+                (c.performed_via_github_app != null);
+            return authoredByBot && (body.startsWith(constants_1.REVIEW_TITLE) ||
+                body.includes(constants_1.LEGACY_BOT_SIGNATURE_SEARCH_KEY));
+        })
             .map(c => c.id);
         ids.push(...botIds);
         // Standard pagination sentinel: fewer than per_page results means last page.
@@ -31491,7 +31496,7 @@ function getRealFiles(review) {
 // review_file artifact and any direct renderReviewMarkdown callers all
 // share the same canonical structure.
 function wrapReviewBody(body) {
-    return [constants_1.REVIEW_COMMENT_MARKER, constants_1.REVIEW_TITLE, '', body].join('\n');
+    return [constants_1.REVIEW_TITLE, '', body].join('\n');
 }
 function renderReviewMarkdown(review) {
     const realFiles = getRealFiles(review);
