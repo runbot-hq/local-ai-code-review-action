@@ -9,7 +9,7 @@
 //
 // Ported from review_commit_2.sh's FORMAT=json jq schema + jq -r renderer.
 
-import { REVIEW_COMMENT_MARKER, REVIEW_TITLE } from './constants'
+import { REVIEW_TITLE } from './constants'
 
 export const REVIEW_SCHEMA = {
   type: 'object',
@@ -207,7 +207,7 @@ export function getRealFiles(review: ParsedReview): ReviewFile[] {
 // review_file artifact and any direct renderReviewMarkdown callers all
 // share the same canonical structure.
 function wrapReviewBody(body: string): string {
-  return [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', body].join('\n')
+  return [REVIEW_TITLE, '', body].join('\n')
 }
 
 export function renderReviewMarkdown(review: ParsedReview): string {

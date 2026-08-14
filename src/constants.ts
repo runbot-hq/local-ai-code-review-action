@@ -1,15 +1,14 @@
-// BOT_SIGNATURE_SEARCH_KEY and BOT_SIGNATURE are intentionally separate.
-// SEARCH_KEY is plain text used to scan existing comments (no Markdown syntax
-// so it can be matched reliably with String.includes()).
-// BOT_SIGNATURE is the full Markdown footer appended to posted reviews.
-// Do NOT merge them — if the footer text ever changes, search would break
-// for comments posted under the old format.
-export const BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot'
-export const BOT_SIGNATURE = `\n\n---\n> 🤖 [${BOT_SIGNATURE_SEARCH_KEY}](https://github.com/runbot-hq/run-bot)`
+// LEGACY_BOT_SIGNATURE_SEARCH_KEY is kept for backward compatibility only.
+// It identifies comments posted before the visible title was introduced.
+// Do NOT use it as the primary deduplication key — footer wording is
+// presentation and will likely change again. Keep for at least one release
+// so replace_existing_comment can still clean up pre-title comments.
+export const LEGACY_BOT_SIGNATURE_SEARCH_KEY = 'AI code review by github.com/runbot-hq/run-bot'
+export const BOT_SIGNATURE = `\n\n---\nReview by [RunBot](https://github.com/runbot-hq/run-bot)`
 
-// Hidden marker and visible heading prepended to every rendered review.
-// Kept as constants so rendering and tests share one canonical definition.
-export const REVIEW_COMMENT_MARKER = '<!-- runbot-review-summary-comment -->'
+// Visible heading prepended to every rendered review.
+// Primary deduplication key: new comments are identified by startsWith(REVIEW_TITLE).
+// Kept as a constant so rendering and tests share one canonical definition.
 export const REVIEW_TITLE = '## 🤖 RunBot Review'
 
 // File extensions/names that carry no reviewable logic — excluded from the

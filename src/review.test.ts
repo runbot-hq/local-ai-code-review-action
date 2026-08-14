@@ -8,7 +8,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { REVIEW_SCHEMA, buildReviewSchema, getRealFiles, renderReviewMarkdown } from './review'
-import { REVIEW_COMMENT_MARKER, REVIEW_TITLE } from './constants'
+import { REVIEW_TITLE } from './constants'
 import type { ParsedReview, ReviewFile } from './review'
 import { buildDiffBlock } from './diff'
 import type { ChangedFile } from './diff'
@@ -304,7 +304,7 @@ test('renderReviewMarkdown: emits one header and one bullet for the #73 repetiti
   assert.equal(bulletMatches?.length, 1)
 })
 
-test('renderReviewMarkdown adds marker and title as exact prefix with blank line', () => {
+test('renderReviewMarkdown starts with the visible title', () => {
   const review: ParsedReview = {
     files: [
       {
@@ -314,15 +314,13 @@ test('renderReviewMarkdown adds marker and title as exact prefix with blank line
     ],
   }
   const markdown = renderReviewMarkdown(review)
-  // Two trailing '\n' entries produce the required blank line between title and body.
-  const expectedPrefix = [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', ''].join('\n')
   assert.ok(
-    markdown.startsWith(expectedPrefix),
-    `Expected blank line after title, got: ${JSON.stringify(markdown.slice(0, 120))}`
+    markdown.startsWith(`${REVIEW_TITLE}\n\n`),
+    `Expected markdown to start with title + blank line, got: ${JSON.stringify(markdown.slice(0, 120))}`
   )
 })
 
-test('renderReviewMarkdown emits marker and title exactly once', () => {
+test('renderReviewMarkdown emits the title exactly once', () => {
   const review: ParsedReview = {
     files: [
       { filename: 'a.ts', issues: [{ comment: 'First' }] },
@@ -331,23 +329,19 @@ test('renderReviewMarkdown emits marker and title exactly once', () => {
   }
   const markdown = renderReviewMarkdown(review)
   assert.equal(
-    markdown.match(new RegExp(REVIEW_COMMENT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))?.length,
-    1,
-    'REVIEW_COMMENT_MARKER must appear exactly once'
-  )
-  assert.equal(
     markdown.match(/^## 🤖 RunBot Review$/gm)?.length,
     1,
     'REVIEW_TITLE must appear exactly once'
   )
+  assert.ok(!markdown.includes('<!--'), 'No HTML comments should be present')
 })
 
-test('renderReviewMarkdown no-issues case emits exact full output', () => {
+test('no-issues output starts with the visible title', () => {
   const review: ParsedReview = { files: [] }
   const markdown = renderReviewMarkdown(review)
   assert.equal(
     markdown,
-    [REVIEW_COMMENT_MARKER, REVIEW_TITLE, '', '✅ No issues found in this PR.'].join('\n'),
-    'No-issues output must match canonical marker+title+blank+body exactly'
+    `${REVIEW_TITLE}\n\n✅ No issues found in this PR.`,
+    'No-issues output must match canonical title+blank+body exactly'
   )
 })

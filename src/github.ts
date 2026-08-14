@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import type * as github from '@actions/github'
 import { execSync } from 'child_process'
-import { BOT_SIGNATURE_SEARCH_KEY } from './constants'
+import { REVIEW_TITLE, LEGACY_BOT_SIGNATURE_SEARCH_KEY } from './constants'
 
 // ---------------------------------------------------------------------------
 // Network diagnostics
@@ -123,7 +123,16 @@ export async function findAllBotCommentIds(
     })
     core.info(`[step 5/5] listComments page=${page} returned ${comments.length} comments`)
     const botIds = comments
-      .filter(c => c.body?.includes(BOT_SIGNATURE_SEARCH_KEY))
+      .filter(c => {
+        const body = c.body ?? ''
+        const authoredByBot =
+          (c.user?.type === 'Bot') ||
+          (c.performed_via_github_app != null)
+        return authoredByBot && (
+          body.startsWith(REVIEW_TITLE) ||
+          body.includes(LEGACY_BOT_SIGNATURE_SEARCH_KEY)
+        )
+      })
       .map(c => c.id)
     ids.push(...botIds)
     // Standard pagination sentinel: fewer than per_page results means last page.
