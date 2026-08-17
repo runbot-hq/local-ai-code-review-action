@@ -31477,7 +31477,8 @@ function getRealFiles(review) {
     }
     return result;
 }
-// Mirrors the jq -r rendering block in review_commit_2.sh exactly:
+// Derived from the jq -r rendering block in review_commit_2.sh, with the
+// per-file "✅ No issues." sections intentionally omitted (see #99).
 //   - empty files[] → "✅ No issues found in this PR."
 //   - per file: "### filename", then "- [Line N: ][severity] comment" per issue.
 //     Sections without renderable issues are omitted entirely (no "✅ No issues."
@@ -31502,9 +31503,6 @@ function wrapReviewBody(body) {
 }
 function renderReviewMarkdown(review) {
     const realFiles = getRealFiles(review);
-    if (realFiles.length === 0) {
-        return wrapReviewBody('✅ No issues found in this PR.');
-    }
     const blocks = [];
     for (const file of realFiles) {
         const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0);

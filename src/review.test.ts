@@ -352,11 +352,20 @@ test('renderReviewMarkdown omits sections without review content', () => {
       { filename: 'reviewed.ts', issues: [{ severity: 'warning', comment: 'Potential bug' }] },
     ],
   }
-  const md = renderReviewMarkdown(review)
-  // The clean.ts section should be omitted entirely — only reviewed.ts appears.
-  assert.ok(md.includes('### reviewed.ts'), 'Should include the file with issues')
-  assert.ok(!md.includes('### clean.ts'), 'Should omit the file without issues')
-  assert.equal(md.match(/^### /gm)?.length, 1, 'Only one file header should be present')
+  assert.equal(
+    renderReviewMarkdown(review),
+    [REVIEW_TITLE, '', '### reviewed.ts', '- [warning] Potential bug'].join('\n'),
+  )
+})
+
+test('renderReviewMarkdown keeps a section when only some comments are blank', () => {
+  const review: ParsedReview = {
+    files: [{ filename: 'a.ts', issues: [{ comment: '  ' }, { severity: 'warning', comment: 'Real' }] }],
+  }
+  assert.equal(
+    renderReviewMarkdown(review),
+    [REVIEW_TITLE, '', '### a.ts', '- [warning] Real'].join('\n'),
+  )
 })
 
 test('renderReviewMarkdown returns one all-clear when every section is empty', () => {
