@@ -31477,10 +31477,12 @@ function getRealFiles(review) {
     }
     return result;
 }
-// Mirrors the jq -r rendering block in review_commit_2.sh exactly:
+// Derived from the jq -r rendering block in review_commit_2.sh, with the
+// per-file "✅ No issues." sections intentionally omitted (see #99).
 //   - empty files[] → "✅ No issues found in this PR."
-//   - per file: "### filename", then either "✅ No issues." (empty issues) or
-//     "- [Line N: ][severity] comment" per issue, followed by a blank line.
+//   - per file: "### filename", then "- [Line N: ][severity] comment" per issue.
+//     Sections without renderable issues are omitted entirely (no "✅ No issues."
+//     per-file block is emitted).
 //
 // Issues with an empty/whitespace-only comment are filtered out defensively
 // even though isParsedReview should already have rejected them upstream —
@@ -31501,26 +31503,23 @@ function wrapReviewBody(body) {
 }
 function renderReviewMarkdown(review) {
     const realFiles = getRealFiles(review);
-    if (realFiles.length === 0) {
-        return wrapReviewBody('✅ No issues found in this PR.');
-    }
     const blocks = [];
     for (const file of realFiles) {
-        const lines = [`### ${file.filename}`];
         const issues = file.issues.filter((issue) => issue.comment?.trim().length > 0);
-        if (issues.length === 0) {
-            lines.push('✅ No issues.');
-        }
-        else {
-            for (const issue of issues) {
-                const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : '';
-                const severity = issue.severity ?? 'suggestion';
-                lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`);
-            }
+        // Do not emit a review section without review content.
+        if (issues.length === 0)
+            continue;
+        const lines = [`### ${file.filename}`];
+        for (const issue of issues) {
+            const linePrefix = issue.line !== undefined ? `Line ${issue.line}: ` : '';
+            const severity = issue.severity ?? 'suggestion';
+            lines.push(`- ${linePrefix}[${severity}] ${issue.comment}`);
         }
         blocks.push(lines.join('\n'));
     }
-    return wrapReviewBody(blocks.join('\n\n'));
+    return blocks.length > 0
+        ? wrapReviewBody(blocks.join('\n\n'))
+        : wrapReviewBody('✅ No issues found in this PR.');
 }
 
 
