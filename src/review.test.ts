@@ -345,3 +345,37 @@ test('no-issues output starts with the visible title', () => {
     'No-issues output must match canonical title+blank+body exactly'
   )
 })
+test('renderReviewMarkdown omits sections without review content', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'clean.ts', issues: [] },
+      { filename: 'reviewed.ts', issues: [{ severity: 'warning', comment: 'Potential bug' }] },
+    ],
+  }
+  const md = renderReviewMarkdown(review)
+  // The clean.ts section should be omitted entirely — only reviewed.ts appears.
+  assert.ok(md.includes('### reviewed.ts'), 'Should include the file with issues')
+  assert.ok(!md.includes('### clean.ts'), 'Should omit the file without issues')
+  assert.equal(md.match(/^### /gm)?.length, 1, 'Only one file header should be present')
+})
+
+test('renderReviewMarkdown returns one all-clear when every section is empty', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [] },
+      { filename: 'b.ts', issues: [] },
+    ],
+  }
+  const md = renderReviewMarkdown(review)
+  assert.equal(md, `${REVIEW_TITLE}\n\n✅ No issues found in this PR.`)
+})
+
+test('renderReviewMarkdown does not emit a section for blank comments', () => {
+  const review: ParsedReview = {
+    files: [
+      { filename: 'a.ts', issues: [{ comment: ' ' }] },
+    ],
+  }
+  const md = renderReviewMarkdown(review)
+  assert.equal(md, `${REVIEW_TITLE}\n\n✅ No issues found in this PR.`)
+})
